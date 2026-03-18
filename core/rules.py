@@ -336,7 +336,8 @@ def _is_recommendation_in_rendered(
         label_norm = _norm(label)
         if not label_norm:
             continue
-        pattern = rf"{re.escape(label_norm)}.{{0,250}}({'|'.join(re.escape(_norm(k)) for k in approved_keywords if _norm(k))})"
+        # Jira can render the testing block as a large table; the value can be far from the label.
+        pattern = rf"{re.escape(label_norm)}.{{0,1200}}({'|'.join(re.escape(_norm(k)) for k in approved_keywords if _norm(k))})"
         if re.search(pattern, html_blob, flags=re.IGNORECASE | re.DOTALL):
             return True
     return False
@@ -511,9 +512,16 @@ def _comment_text(comment: dict) -> str:
 
 def _extract_rqg_comment_signals(comments: List[dict]) -> Dict[str, bool]:
     text_blob = "\n".join(_comment_text(c) for c in comments).lower()
+    # Keep this intentionally permissive: the "RQG" button in Jira often leaves
+    # different comment templates across projects/versions.
+    rqg_markers = ("rqg", "qgm", "quality gate", "quality-gate")
+    ok_markers = ("успеш", "пройден", "пройдены", "ok", "passed", "success")
     return {
         "rqg_success": "проверки rqg успешно выполнены" in text_blob
-        or ("rqg" in text_blob and "успеш" in text_blob),
+        or (
+            any(m in text_blob for m in rqg_markers)
+            and any(m in text_blob for m in ok_markers)
+        ),
         "testing_completed": "запланированный объём тестирования: выполнен" in text_blob
         or "запланированный объем тестирования: выполнен" in text_blob,
         "no_critical_bugs": "открытые блокирующие и критичные дефекты: нет" in text_blob
@@ -549,6 +557,10 @@ def _parse_http_status_from_text(text: str) -> Optional[int]:
 def _is_qgm_technical_error(message: str) -> bool:
     msg = (message or "").lower()
     if "request failed" in msg:
+        return True
+    if "empty non-json body" in msg or "returned empty" in msg:
+        return True
+    if "timed out" in msg or "timeout" in msg:
         return True
     status = _parse_http_status_from_text(message or "")
     return status in {400, 401, 403, 404, 405, 429, 500, 502, 503, 504}
