@@ -176,7 +176,10 @@ def format_release_gate_report(result: Dict[str, Any]) -> str:
         if gate_id == "distribution_tab":
             lines.append("    Что сделать: проверь поля 'Ссылка на дистрибутив' и 'КЭ дистрибутива'.")
         elif gate_id == "testing_recommendation":
-            lines.append("    Что сделать: в релизе должна быть рекомендация ИФТ = 'Рекомендован'.")
+            lines.append(
+                "    Что сделать: в Jira в блоке «Отчёт о тестировании» статус «Рекомендация по отчёту ИФТ» "
+                "должен быть «Рекомендован» (не «НЕ РЕКОМЕНДОВАН»). Сформируйте/обновите отчёт ИФТ в Jira."
+            )
         elif gate_id == "nt_recommendation":
             lines.append("    Что сделать: НТ должна быть 'Не требуется' или 'Версия 2 РЕКОМЕНДОВАН'.")
         elif gate_id == "dt_recommendation":

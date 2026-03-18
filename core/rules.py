@@ -39,6 +39,35 @@ def _contains_any(text: str, keywords: List[str]) -> bool:
     return any(_norm(word) in lowered for word in (keywords or []))
 
 
+def _is_explicit_not_recommended(text: str) -> bool:
+    """«НЕ РЕКОМЕНДОВАН» содержит подстроку «рекомендован» — нельзя матчить слепо."""
+    t = _norm(text)
+    if not t:
+        return False
+    return bool(
+        re.search(
+            r"не\s*рекоменд|not\s*recommended|отказ\s*в\s*рекоменд|н\/д\s*рекоменд",
+            t,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _text_matches_ift_or_dt_approved(text: Any, approved_keywords: List[str]) -> bool:
+    """ИФТ/ДТ: сначала отрицание, потом одобренные формулировки."""
+    s = _value_to_text(text)
+    if _is_explicit_not_recommended(s):
+        return False
+    lowered = _norm(s)
+    if not lowered or lowered in ("none", "n/a", "н/д", "-", "нет", "null"):
+        return False
+    for word in approved_keywords or []:
+        w = _norm(word)
+        if w and w in lowered:
+            return True
+    return False
+
+
 def _status_in(status: str, allowed_statuses: List[str]) -> bool:
     status_norm = _norm(status)
     allowed = {_norm(item) for item in (allowed_statuses or [])}
@@ -251,10 +280,58 @@ def _is_distribution_registered(
     return False
 
 
+def _ift_recommended_from_rendered_html(release_issue: dict) -> Optional[bool]:
+    """
+    Только в контексте блока «рекомендация по отчёту ИФТ».
+    True / False / None (блок ИФТ в HTML не найден).
+    """
+    chunks: list[str] = []
+    for container in (
+        release_issue.get("renderedFields") or {},
+        release_issue.get("fields") or {},
+    ):
+        if not isinstance(container, dict):
+            continue
+        for v in container.values():
+            if isinstance(v, str) and len(v) > 25:
+                chunks.append(_normalize_testing_html_fragment(v))
+    merged = _normalize_testing_html_fragment(" ".join(chunks))
+    if not merged:
+        return None
+    label_re = re.compile(
+        r"рекомендация\s+по\s+отчет[уа]\s+ифт|рекомендац[ия]\s+по\s+отчет[уа]\s+ифт|"
+        r"recommendation\s+ift|отчет[уа]\s+ифт\s*[:]",
+        flags=re.IGNORECASE,
+    )
+    any_label = False
+    for m in label_re.finditer(merged):
+        any_label = True
+        win = merged[m.end() : m.end() + 10000]
+        head = win[:3500]
+        if _is_explicit_not_recommended(head):
+            return False
+        if re.search(r"не\s*рекоменд", head, flags=re.IGNORECASE):
+            return False
+        if re.search(r"(^|[^а-яёa-z])(рекомендован|recommended)([^а-яёa-z]|$)", head):
+            if not re.search(r"не\s*рекоменд", head[:800], flags=re.IGNORECASE):
+                return True
+    if any_label:
+        return False
+    return None
+
+
 def _is_ift_recommended(release_issue: dict, profile: dict) -> bool:
     fields = release_issue.get("fields", {}) or {}
     rendered = release_issue.get("renderedFields", {}) or {}
     tab = profile.get("testing_tab", {})
+    approved = tab.get("ift_approved_keywords", ["рекомендован", "recommended"])
+
+    # Ключевые слова для поля: сначала однозначные (голое «ифт» даёт ложные срабатывания)
+    ift_keywords = list(tab.get("ift_display_keywords", []))
+    ift_keywords = [k for k in ift_keywords if _norm(k) != _norm("ифт")] + [
+        k for k in ift_keywords if _norm(k) == _norm("ифт")
+    ]
+
     candidates = tab.get("ift_recommendation_fields", [])
     value = _find_issue_value_by_candidates(fields, candidates)
     if value is None:
@@ -262,38 +339,17 @@ def _is_ift_recommended(release_issue: dict, profile: dict) -> bool:
     if value is None:
         value = _find_field_value_by_display_name(
             release_issue,
-            tab.get("ift_display_keywords", []),
+            ift_keywords,
         )
-    if value is None:
-        blob = _flatten_issue_fields(release_issue).lower()
-        has_label = "ифт" in blob or "ift" in blob
-        has_recommended = "рекоменд" in blob or "recommended" in blob
-        has_green = any(_norm(x) in blob for x in tab.get("green_keywords", []))
-        if has_label and has_recommended and (has_green or has_recommended):
-            return True
-        html_blob = str(release_issue.get("renderedFields", {})).lower()
-        html_blob = re.sub(r"<[^>]+>", " ", html_blob)
-        html_blob = re.sub(r"\s+", " ", html_blob)
-        if re.search(
-            r"рекомендац[а-я\s]*по\s*отчет[а-я\s]*ифт.{0,400}рекомендован",
-            html_blob,
-            flags=re.IGNORECASE | re.DOTALL,
-        ):
-            return True
-        if re.search(
-            r"ift.{0,200}recommend.{0,200}recommend",
-            html_blob,
-            flags=re.IGNORECASE | re.DOTALL,
-        ):
-            return True
-        return False
-    keyword = (tab.get("ift_approved_keywords") or ["рекомендован"])[0]
-    value_str = str(value)
-    if _contains_any(value_str, [keyword]):
-        return True
-    return _contains_any(
-        value_str, tab.get("ift_approved_keywords", ["рекоменд", "recommended"])
-    )
+    if value is not None:
+        return _text_matches_ift_or_dt_approved(value, approved)
+
+    html_result = _ift_recommended_from_rendered_html(release_issue)
+    if html_result is not None:
+        return html_result
+
+    # Нет ни значения поля, ни распознанного блока ИФТ в HTML — не «зеленим» забор
+    return False
 
 
 def _is_recommendation_by_display_name(
@@ -311,8 +367,16 @@ def _is_recommendation_by_display_name(
         blob = _flatten_issue_fields(release_issue).lower()
         has_marker = any(_norm(k) in blob for k in (display_keywords or []))
         if has_marker:
+            if _is_explicit_not_recommended(blob):
+                return False
             return _contains_any(blob, approved_keywords)
         return False
+    # ИФТ/ДТ: «не рекомендован» не считать за «рекомендован»
+    if any(
+        _norm(x) in ("рекомендован", "recommended", "рекоменд")
+        for x in (approved_keywords or [])
+    ) and not any(_norm(x) in ("не требуется", "not required") for x in (approved_keywords or [])):
+        return _text_matches_ift_or_dt_approved(value, approved_keywords)
     return _contains_any(_value_to_text(value), approved_keywords)
 
 
@@ -916,12 +980,6 @@ def evaluate_gates(
             release_issue,
             approved_keywords=testing_tab.get("dt_approved_keywords")
             or ["рекомендован", "recommended"],
-        )
-    if not recommendation_ok:
-        recommendation_ok = _is_recommendation_in_rendered(
-            release_issue,
-            testing_tab.get("ift_display_keywords", []),
-            testing_tab.get("ift_approved_keywords", []),
         )
 
     rqg_actual_ok = False
