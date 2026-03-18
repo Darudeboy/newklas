@@ -5,7 +5,7 @@ This package is intentionally thin: it wires user input to core orchestrator/ser
 and renders results. Business logic stays in `core/`.
 """
 
-from ui.app import ModernJiraApp
+from .app import ModernJiraApp
 
 __all__ = ["ModernJiraApp"]
 

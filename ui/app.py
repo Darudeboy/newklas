@@ -158,6 +158,7 @@ class ModernJiraApp(ctk.CTk):
             ui_set_result_text=lambda t: self.after(0, lambda: ui_set_result_text(t)),
             ui_show_error=ui_show_error,
             ui_show_info=ui_show_info,
+            ui_ask_yes_no=lambda title, msg: messagebox.askyesno(title, msg),
             ui_set_connection=ui_set_connection,
         )
 

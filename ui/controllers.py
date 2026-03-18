@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from config import (
@@ -47,6 +48,7 @@ class AppController:
         ui_set_result_text: Callable[[str], None],
         ui_show_error: Callable[[str, str], None],
         ui_show_info: Callable[[str, str], None],
+        ui_ask_yes_no: Callable[[str, str], bool],
         ui_set_connection: Callable[[bool], None],
     ):
         self.jira_service = jira_service
@@ -59,9 +61,23 @@ class AppController:
         self._ui_set_result_text = ui_set_result_text
         self._ui_show_error = ui_show_error
         self._ui_show_info = ui_show_info
+        self._ui_ask_yes_no = ui_ask_yes_no
         self._ui_set_connection = ui_set_connection
 
         self._init_master_analyzer()
+        self.current_analysis: Optional[Dict[str, Any]] = None
+        self._output_lines: list[str] = []
+
+    def _reset_output(self, header: str) -> None:
+        self._output_lines = []
+        self._append_output(header)
+
+    def _append_output(self, line: str) -> None:
+        ts = datetime.now().strftime("%H:%M:%S")
+        self._output_lines.append(f"[{ts}] {line}")
+        if len(self._output_lines) > 4000:
+            self._output_lines = self._output_lines[-3500:]
+        self._ui_set_result_text("\n".join(self._output_lines))
 
     def _init_master_analyzer(self) -> None:
         try:
@@ -452,6 +468,7 @@ class AppController:
         def worker():
             try:
                 analysis = self.master_analyzer.analyze_release(safe_release)
+                self.current_analysis = analysis
                 self.state.last_snapshot = self.state.last_snapshot or {}
                 self.state.last_snapshot["master_analysis"] = analysis
                 self._ui_set_result_text(
@@ -469,3 +486,322 @@ class AppController:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def create_deploy_plan(self) -> None:
+        """
+        Создать/обновить Deploy plan в Confluence по результату последнего master анализа.
+        """
+        analysis = self.current_analysis or (self.state.last_snapshot or {}).get("master_analysis")
+        if not analysis or not isinstance(analysis, dict) or not analysis.get("success"):
+            self._ui_show_error("Ошибка", "Сначала выполни Master analyze.")
+            return
+        services = analysis.get("services") or []
+        if not services:
+            self._ui_show_error("Нет сервисов", "Нет сервисов для Deploy plan.")
+            return
+        if not self.master_analyzer:
+            self._ui_show_error("Ошибка", "Confluence не настроен. Проверь .env.")
+            return
+
+        preview = ", ".join(services[:5]) + (f"… (+{len(services)-5})" if len(services) > 5 else "")
+        ok = self._ui_ask_yes_no(
+            "Подтверждение",
+            "Создать/обновить Deploy plan?\n\n"
+            f"Релиз: {analysis.get('release_key')}\n"
+            f"Сервисов: {len(services)}\n"
+            f"Пример: {preview}\n\n"
+            f"Confluence: {CONFLUENCE_SPACE_KEY}/{CONFLUENCE_PARENT_PAGE_TITLE}\n"
+            f"Команда: {TEAM_NAME}",
+        )
+        if not ok:
+            return
+
+        self._ui_set_status("Deploy plan…", "#1565C0")
+        self._reset_output("📝 Создание Deploy plan…")
+
+        def worker():
+            try:
+                result = self.master_analyzer.generate_deploy_plan(
+                    analysis_result=analysis,
+                    space_key=CONFLUENCE_SPACE_KEY,
+                    parent_page_title=CONFLUENCE_PARENT_PAGE_TITLE,
+                    team_name=TEAM_NAME,
+                )
+                if result.get("success"):
+                    page_url = result.get("page_url", "")
+                    page_title = result.get("page_title", "")
+                    self._append_output("✅ Deploy plan создан/обновлён")
+                    self._append_output(f"📄 {page_title}")
+                    self._append_output(f"🔗 {page_url}")
+                    self._ui_set_status("Готово", "#2E7D32")
+                    self.history.add(
+                        "Deploy plan",
+                        {"release": analysis.get("release_key"), "services_count": len(services), "page_url": page_url},
+                    )
+                    self.history.save_to_file(self.history_path)
+                else:
+                    msg = result.get("message") or "Не удалось создать Deploy plan"
+                    details = result.get("details") or ""
+                    self._append_output(f"❌ {msg}")
+                    if details:
+                        self._append_output(str(details)[:2000])
+                    self._ui_set_status("Ошибка", "#C62828")
+            except Exception as e:
+                self._append_output(f"❌ Ошибка Deploy plan: {e}")
+                self._ui_set_status("Ошибка", "#C62828")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def link_issues(self, *, release_key: str, fix_version: str, dry_run: bool = False) -> None:
+        safe_release = (release_key or "").strip().upper()
+        fv = (fix_version or "").strip()
+        if not safe_release or not fv:
+            self._ui_show_error("Ошибка", "Нужны release_key и fixVersion.")
+            return
+
+        self._ui_set_status("Linking…", "#1565C0")
+        self._reset_output(f"🔗 Привязка задач fixVersion='{fv}' -> {safe_release}")
+
+        def worker():
+            try:
+                self._append_output("Поиск задач по fixVersion…")
+                jql = (
+                    'project IN (HRM, HRC, NEUROUI, SFILE, SEARCHCS) '
+                    'AND issuetype IN (Bug, Story) '
+                    f'AND fixVersion = \"{fv}\"'
+                )
+                issues = self.jira_service.search_issues(jql)
+                if not issues:
+                    self._append_output("ℹ️ Нет задач для привязки.")
+                    self._ui_set_status("Готово", "#2E7D32")
+                    return
+
+                link_types = self.jira_service.get_link_types() or {}
+                link_type_name = next((name for name in link_types if "part" in name.lower()), None)
+                if not link_type_name:
+                    self._append_output("❌ Не найден подходящий тип связи (PartOf).")
+                    self._ui_set_status("Ошибка", "#C62828")
+                    return
+
+                self._append_output("Проверка существующих связей релиза…")
+                already_linked = set(self.jira_service.get_linked_issues(safe_release))
+                issues_to_link = [
+                    issue for issue in issues
+                    if issue.get("key") and issue["key"] not in already_linked and issue["key"] != safe_release
+                ]
+                if not issues_to_link:
+                    self._append_output(f"ℹ️ Все задачи уже привязаны к {safe_release}.")
+                    self._ui_set_status("Готово", "#2E7D32")
+                    return
+
+                total = len(issues_to_link)
+                success_count = 0
+                errors: list[str] = []
+                for i, issue in enumerate(issues_to_link, 1):
+                    key = issue["key"]
+                    if dry_run:
+                        self._append_output(f"🔍 {key} (dry-run)")
+                        success_count += 1
+                    else:
+                        if self.jira_service.create_issue_link(key, safe_release, link_type_name):
+                            success_count += 1
+                            self._append_output(f"✅ {key}")
+                        else:
+                            errors.append(key)
+                            self._append_output(f"❌ {key}")
+                    if i % 25 == 0 or i == total:
+                        self._ui_set_status(f"Linking… {i}/{total}", "#1565C0")
+
+                self.history.add(
+                    "Привязка задач",
+                    {"release_key": safe_release, "fix_version": fv, "total": total, "success": success_count, "errors": len(errors)},
+                )
+                self.history.save_to_file(self.history_path)
+
+                msg = f"Готово. Успешно: {success_count}/{total}" + (f", ошибок: {len(errors)}" if errors else "")
+                self._append_output(msg)
+                self._ui_set_status("Готово", "#2E7D32" if not errors else "#EF6C00")
+            except Exception as e:
+                self._append_output(f"❌ Ошибка линкинга: {e}")
+                self._ui_set_status("Ошибка", "#C62828")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def cleanup_issues(self, *, release_key: str, fix_version: str, dry_run: bool = False) -> None:
+        safe_release = (release_key or "").strip().upper()
+        fv = (fix_version or "").strip()
+        if not safe_release or not fv:
+            self._ui_show_error("Ошибка", "Нужны release_key и fixVersion.")
+            return
+
+        self._ui_set_status("Cleanup…", "#1565C0")
+        self._reset_output(f"🧹 Очистка связей релиза {safe_release} (оставить только fixVersion='{fv}')")
+
+        def worker():
+            try:
+                linked = self.jira_service.get_linked_issues(safe_release)
+                if not linked:
+                    self._append_output("ℹ️ Нет связанных задач.")
+                    self._ui_set_status("Готово", "#2E7D32")
+                    return
+
+                total = len(linked)
+                removed = 0
+                for i, issue_key in enumerate(linked, 1):
+                    issue_data = self.jira_service.get_issue_details(issue_key)
+                    if not issue_data:
+                        continue
+                    fields = issue_data.get("fields", {}) or {}
+                    version_names = [v.get("name") for v in (fields.get("fixVersions") or []) if isinstance(v, dict)]
+                    if fv not in version_names:
+                        for link in fields.get("issuelinks", []) or []:
+                            outward = (link.get("outwardIssue") or {}).get("key")
+                            inward = (link.get("inwardIssue") or {}).get("key")
+                            if outward == safe_release or inward == safe_release:
+                                link_id = link.get("id")
+                                if not link_id:
+                                    break
+                                if dry_run:
+                                    removed += 1
+                                    self._append_output(f"🔍 {issue_key} (dry-run remove)")
+                                else:
+                                    if self.jira_service.delete_issue_link(str(link_id)):
+                                        removed += 1
+                                        self._append_output(f"✅ {issue_key} (removed)")
+                                break
+                    if i % 25 == 0 or i == total:
+                        self._ui_set_status(f"Cleanup… {i}/{total}", "#1565C0")
+
+                self.history.add("Очистка связей", {"release_key": safe_release, "fix_version": fv, "total": total, "removed": removed})
+                self.history.save_to_file(self.history_path)
+                self._append_output(f"Готово. Удалено: {removed}/{total}")
+                self._ui_set_status("Готово", "#2E7D32")
+            except Exception as e:
+                self._append_output(f"❌ Ошибка cleanup: {e}")
+                self._ui_set_status("Ошибка", "#C62828")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def remove_all_issues(self, *, release_key: str, fix_version: str, dry_run: bool = False) -> None:
+        safe_release = (release_key or "").strip().upper()
+        fv = (fix_version or "").strip()
+        if not safe_release or not fv:
+            self._ui_show_error("Ошибка", "Нужны release_key и fixVersion.")
+            return
+
+        if not dry_run:
+            ok = self._ui_ask_yes_no(
+                "Подтверждение",
+                f"Удалить ВСЕ связи для {safe_release} по fixVersion='{fv}'?\n\nЭто действие необратимо!",
+            )
+            if not ok:
+                return
+
+        self._ui_set_status("Remove all…", "#1565C0")
+        self._reset_output(f"🗑 Удаление всех связей {safe_release} (fixVersion='{fv}')")
+
+        def worker():
+            try:
+                linked = self.jira_service.get_linked_issues(safe_release)
+                if not linked:
+                    self._append_output("ℹ️ Нет связанных задач.")
+                    self._ui_set_status("Готово", "#2E7D32")
+                    return
+
+                total = len(linked)
+                removed = 0
+                errors: list[str] = []
+                for i, issue_key in enumerate(linked, 1):
+                    issue_data = self.jira_service.get_issue_details(issue_key)
+                    if not issue_data:
+                        continue
+                    fields = issue_data.get("fields", {}) or {}
+                    version_names = [v.get("name") for v in (fields.get("fixVersions") or []) if isinstance(v, dict)]
+                    if fv in version_names:
+                        for link in fields.get("issuelinks", []) or []:
+                            outward = (link.get("outwardIssue") or {}).get("key")
+                            inward = (link.get("inwardIssue") or {}).get("key")
+                            if outward == safe_release or inward == safe_release:
+                                link_id = link.get("id")
+                                if not link_id:
+                                    break
+                                if dry_run:
+                                    removed += 1
+                                    self._append_output(f"🔍 {issue_key} (dry-run remove)")
+                                else:
+                                    if self.jira_service.delete_issue_link(str(link_id)):
+                                        removed += 1
+                                        self._append_output(f"✅ {issue_key} removed")
+                                    else:
+                                        errors.append(issue_key)
+                                        self._append_output(f"❌ {issue_key} failed")
+                                break
+                    if i % 25 == 0 or i == total:
+                        self._ui_set_status(f"Remove all… {i}/{total}", "#1565C0")
+
+                self.history.add("Удаление всех связей", {"release_key": safe_release, "fix_version": fv, "total": total, "removed": removed, "errors": len(errors)})
+                self.history.save_to_file(self.history_path)
+                msg = f"Готово. Удалено: {removed}/{total}" + (f", ошибок: {len(errors)}" if errors else "")
+                self._append_output(msg)
+                self._ui_set_status("Готово", "#2E7D32" if not errors else "#EF6C00")
+            except Exception as e:
+                self._append_output(f"❌ Ошибка remove-all: {e}")
+                self._ui_set_status("Ошибка", "#C62828")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def run_architecture_update(self, *, release_key: str, project_key: str, fix_version: str) -> None:
+        safe_release = (release_key or "").strip().upper()
+        pk = (project_key or "").strip().upper()
+        fv = (fix_version or "").strip()
+        if not pk or not fv:
+            # try derive from snapshot
+            snap = self.state.last_snapshot or {}
+            pk = pk or (snap.get("project_key") or "").strip().upper()
+            # fixVersion: from release_issue.fixVersions if present
+            rel = (snap.get("release_issue") or {}).get("fields", {}) if isinstance(snap.get("release_issue"), dict) else {}
+            if not fv and isinstance(rel, dict):
+                for item in rel.get("fixVersions", []) or []:
+                    if isinstance(item, dict) and item.get("name"):
+                        fv = str(item["name"]).strip()
+                        break
+        if not pk or not fv:
+            self._ui_show_error("Нужны параметры", "Укажи Project и fixVersion (или сначала запусти проверку для snapshot).")
+            return
+
+        script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "arch.py"))
+        if not os.path.exists(script_path):
+            self._ui_show_error("Нет arch.py", f"Скрипт не найден: {script_path}")
+            return
+
+        self._ui_set_status("Architecture…", "#1565C0")
+        self._reset_output(f"🏗 Проставление архитектуры: {pk} / {fv}")
+
+        def worker():
+            try:
+                proc = subprocess.run(
+                    [sys.executable, script_path, "--project-key", pk, "--fix-version", fv, "--yes"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                out = (proc.stdout or "").strip()
+                err = (proc.stderr or "").strip()
+                if proc.returncode == 0:
+                    self._append_output("✅ Готово")
+                    if out:
+                        self._append_output(out[-2000:])
+                    self._ui_set_status("Готово", "#2E7D32")
+                    self.history.add("Architecture", {"project": pk, "fix_version": fv})
+                    self.history.save_to_file(self.history_path)
+                else:
+                    self._append_output(f"❌ Ошибка arch.py (exit={proc.returncode})")
+                    if out:
+                        self._append_output("STDOUT:\n" + out[-2000:])
+                    if err:
+                        self._append_output("STDERR:\n" + err[-2000:])
+                    self._ui_set_status("Ошибка", "#C62828")
+            except Exception as e:
+                self._append_output(f"❌ Ошибка Architecture: {e}")
+                self._ui_set_status("Ошибка", "#C62828")
+
+        threading.Thread(target=worker, daemon=True).start()

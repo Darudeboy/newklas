@@ -21,6 +21,8 @@ class MainFormPanel(ctk.CTkFrame):
 
         self.release_key = ctk.StringVar(value="")
         self.profile = ctk.StringVar(value="auto")
+        self.project_key = ctk.StringVar(value="")
+        self.fix_version = ctk.StringVar(value="")
         self.dry_run = ctk.BooleanVar(value=False)
         self.post_success_comment = ctk.BooleanVar(value=False)
         self.target_lt = ctk.StringVar(value="45")
@@ -35,6 +37,15 @@ class MainFormPanel(ctk.CTkFrame):
         ctk.CTkLabel(row1, text="Профиль", width=70, anchor="w").pack(side="left")
         self.profile_entry = ctk.CTkEntry(row1, textvariable=self.profile, width=110)
         self.profile_entry.pack(side="left")
+
+        row1b = ctk.CTkFrame(form, fg_color="transparent")
+        row1b.pack(fill="x", padx=10, pady=(0, 6))
+        ctk.CTkLabel(row1b, text="Project", width=110, anchor="w").pack(side="left")
+        self.project_entry = ctk.CTkEntry(row1b, textvariable=self.project_key, width=110)
+        self.project_entry.pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(row1b, text="fixVersion", width=70, anchor="w").pack(side="left")
+        self.fix_version_entry = ctk.CTkEntry(row1b, textvariable=self.fix_version)
+        self.fix_version_entry.pack(side="left", fill="x", expand=True)
 
         row2 = ctk.CTkFrame(form, fg_color="transparent")
         row2.pack(fill="x", padx=10, pady=(0, 10))
@@ -82,11 +93,41 @@ class MainFormPanel(ctk.CTkFrame):
             buttons, text="БТ/FR", width=70, command=self._bt
         ).pack(side="right", padx=6, pady=8)
 
+        # Operations (no-LLM) row
+        ops = ctk.CTkFrame(self)
+        ops.pack(fill="x", padx=16, pady=(0, 12))
+
+        ctk.CTkButton(ops, text="Link issues", command=self._link).pack(
+            side="left", padx=6, pady=6
+        )
+        ctk.CTkButton(ops, text="Cleanup links", command=self._cleanup).pack(
+            side="left", padx=6, pady=6
+        )
+        ctk.CTkButton(ops, text="Remove all links", command=self._remove_all).pack(
+            side="left", padx=6, pady=6
+        )
+
+        ctk.CTkButton(ops, text="Master analyze", command=self._master_analyze).pack(
+            side="right", padx=6, pady=6
+        )
+        ctk.CTkButton(ops, text="Deploy plan", command=self._deploy_plan).pack(
+            side="right", padx=6, pady=6
+        )
+        ctk.CTkButton(ops, text="Architecture", command=self._arch).pack(
+            side="right", padx=6, pady=6
+        )
+
     def get_release_key(self) -> str:
         return (self.release_key.get() or "").strip().upper()
 
     def get_profile(self) -> str:
         return (self.profile.get() or "auto").strip().lower()
+
+    def get_project_key(self) -> str:
+        return (self.project_key.get() or "").strip().upper()
+
+    def get_fix_version(self) -> str:
+        return (self.fix_version.get() or "").strip()
 
     def is_dry_run(self) -> bool:
         return bool(self.dry_run.get())
@@ -139,4 +180,38 @@ class MainFormPanel(ctk.CTkFrame):
 
     def _bt(self) -> None:
         self.controller.run_business_requirements(release_key=self.get_release_key())
+
+    def _link(self) -> None:
+        self.controller.link_issues(
+            release_key=self.get_release_key(),
+            fix_version=self.get_fix_version(),
+            dry_run=self.is_dry_run(),
+        )
+
+    def _cleanup(self) -> None:
+        self.controller.cleanup_issues(
+            release_key=self.get_release_key(),
+            fix_version=self.get_fix_version(),
+            dry_run=self.is_dry_run(),
+        )
+
+    def _remove_all(self) -> None:
+        self.controller.remove_all_issues(
+            release_key=self.get_release_key(),
+            fix_version=self.get_fix_version(),
+            dry_run=self.is_dry_run(),
+        )
+
+    def _master_analyze(self) -> None:
+        self.controller.analyze_master_services(release_key=self.get_release_key())
+
+    def _deploy_plan(self) -> None:
+        self.controller.create_deploy_plan()
+
+    def _arch(self) -> None:
+        self.controller.run_architecture_update(
+            release_key=self.get_release_key(),
+            project_key=self.get_project_key(),
+            fix_version=self.get_fix_version(),
+        )
 
