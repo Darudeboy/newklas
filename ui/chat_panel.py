@@ -13,10 +13,12 @@ class ChatPanel(ctk.CTkFrame):
         *,
         assistant: Assistant,
         get_context,
+        execute_command=None,
     ):
         super().__init__(master)
         self._assistant = assistant
         self._get_context = get_context
+        self._execute_command = execute_command
 
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=16, pady=(16, 8))
@@ -70,6 +72,13 @@ class ChatPanel(ctk.CTkFrame):
         self.input.delete(0, "end")
         snapshot, result = self._get_context()
         self.append(f"\nВы: {q}\n")
+
+        if callable(self._execute_command):
+            cmd_result = self._execute_command(q)
+            if cmd_result:
+                self.append(f"Assistant: {cmd_result}\n")
+                return
+
         answer = self._assistant.reply(q, snapshot=snapshot, result=result)
         self.append(f"Assistant: {answer}\n")
 

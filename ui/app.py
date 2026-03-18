@@ -113,6 +113,7 @@ class ModernJiraApp(ctk.CTk):
             self.tab_assistant,
             assistant=self.assistant,
             get_context=lambda: self.controller.get_context(),
+            execute_command=lambda text: self.controller.execute_chat_command(text),
         )
         self.chat_panel.pack(fill="both", expand=True)
 

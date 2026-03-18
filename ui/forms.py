@@ -78,6 +78,10 @@ class MainFormPanel(ctk.CTkFrame):
             buttons, text="Tasks+PR", width=90, command=self._pr_status
         ).pack(side="right", padx=6, pady=8)
 
+        ctk.CTkButton(
+            buttons, text="БТ/FR", width=70, command=self._bt
+        ).pack(side="right", padx=6, pady=8)
+
     def get_release_key(self) -> str:
         return (self.release_key.get() or "").strip().upper()
 
@@ -132,4 +136,7 @@ class MainFormPanel(ctk.CTkFrame):
 
     def _pr_status(self) -> None:
         self.controller.run_release_pr_status(release_key=self.get_release_key())
+
+    def _bt(self) -> None:
+        self.controller.run_business_requirements(release_key=self.get_release_key())
 

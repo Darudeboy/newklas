@@ -4,6 +4,10 @@ import json
 import logging
 import threading
 from dataclasses import dataclass
+import os
+import re
+import subprocess
+import sys
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from config import (
@@ -77,6 +81,28 @@ class AppController:
 
     def get_context(self) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         return self.state.last_snapshot, self.state.last_result
+
+    def execute_chat_command(self, text: str) -> str:
+        """
+        Deterministic command handler for chat panel (no LLM).
+
+        Supported:
+        - "собери бизнес-требования для HRPRELEASE-12345" (+ optional "проект HRM")
+        """
+        raw = (text or "").strip()
+        lowered = raw.lower()
+        m = re.search(r"\b(HRPRELEASE-\d+)\b", raw, re.IGNORECASE)
+        release_key = m.group(1).upper() if m else ""
+        project_match = re.search(r"\b(HRC|HRM|NEUROUI|SFILE|SEARCHCS|NEURO|HRPDEV)\b", raw, re.IGNORECASE)
+        project_key = project_match.group(1).upper() if project_match else ""
+
+        if ("бизнес" in lowered and "треб" in lowered) or "bt" in lowered or "бт" in lowered:
+            if not release_key:
+                return "Укажи релиз в формате HRPRELEASE-12345."
+            self.run_business_requirements(release_key=release_key, project_key=project_key or None)
+            return f"Запускаю сбор БТ/FR для {release_key}" + (f" (проект {project_key})" if project_key else "") + ". Результат появится во вкладке «Результаты»."
+
+        return "Я понимаю только: summary/blockers/next actions и команды БТ/FR (например: «собери бизнес-требования для HRPRELEASE-12345, проект HRM»)."
 
     def check_connection_async(self) -> None:
         def worker():
@@ -333,6 +359,81 @@ class AppController:
             except Exception as e:
                 self._ui_set_status("Ошибка", "#C62828")
                 self._ui_set_result_text(f"Ошибка Tasks+PR: {e}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def run_business_requirements(self, *, release_key: str, project_key: str | None = None) -> None:
+        safe_release = (release_key or "").strip().upper()
+        if not safe_release:
+            self._ui_show_error("Ошибка", "Введите ключ релиза.")
+            return
+
+        snapshot = self.state.last_snapshot or {}
+        derived_project = (snapshot.get("project_key") or "").strip().upper()
+        effective_project = (project_key or derived_project).strip().upper()
+        if not effective_project:
+            self._ui_show_error(
+                "Нужен проект",
+                "Не удалось определить project_key. Запусти сначала проверку гейтов (чтобы собрать snapshot) "
+                "или укажи в чате: «проект HRM».",
+            )
+            return
+
+        script_path = os.path.join(os.path.dirname(__file__), "..", "bt3.py")
+        script_path = os.path.abspath(script_path)
+        if not os.path.exists(script_path):
+            self._ui_show_error("Нет bt3.py", f"Скрипт не найден: {script_path}")
+            return
+
+        self._ui_set_status("БТ/FR…", "#1565C0")
+        self._ui_set_result_text(f"Запуск bt3.py для {safe_release} / {effective_project}…")
+
+        def worker():
+            try:
+                proc = subprocess.run(
+                    [sys.executable, script_path, safe_release, effective_project],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                stdout = (proc.stdout or "").strip()
+                stderr = (proc.stderr or "").strip()
+
+                ok = False
+                url = ""
+                msg = ""
+                for line in stdout.splitlines():
+                    if line.startswith("ok="):
+                        ok = line.split("=", 1)[1].strip().lower() == "true"
+                    elif line.startswith("url="):
+                        url = line.split("=", 1)[1].strip()
+                    elif line.startswith("msg="):
+                        msg = line.split("=", 1)[1].strip()
+
+                if proc.returncode != 0 and not msg:
+                    msg = stderr[-1500:] if stderr else f"bt3.py exit_code={proc.returncode}"
+
+                if ok and url:
+                    text_out = f"✅ БТ/FR готово: {url}\n{msg}".strip()
+                    self._ui_set_result_text(text_out)
+                    self._ui_set_status("Готово", "#2E7D32")
+                    self.history.add("BT/FR", {"release": safe_release, "project": effective_project, "url": url})
+                    self.history.save_to_file(self.history_path)
+                    return
+
+                preview = stdout[-2000:] if stdout else ""
+                err_preview = stderr[-2000:] if stderr else ""
+                text_out = (
+                    "❌ Не удалось собрать БТ/FR.\n"
+                    + (f"{msg}\n" if msg else "")
+                    + (f"\nSTDOUT:\n{preview}\n" if preview else "")
+                    + (f"\nSTDERR:\n{err_preview}\n" if err_preview else "")
+                ).strip()
+                self._ui_set_result_text(text_out)
+                self._ui_set_status("Ошибка", "#C62828")
+            except Exception as e:
+                self._ui_set_result_text(f"Ошибка BT/FR: {e}")
+                self._ui_set_status("Ошибка", "#C62828")
 
         threading.Thread(target=worker, daemon=True).start()
 
