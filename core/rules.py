@@ -134,24 +134,47 @@ def _find_field_value_by_display_name(
     names = issue.get("names", {}) or {}
     if not isinstance(names, dict):
         return None
+    # IMPORTANT: preserve keyword priority. Jira "names" iteration order is not stable
+    # and overly broad keywords (e.g. "ифт") can match multiple fields.
     normalized_keywords = [_norm(x) for x in (name_keywords or []) if _norm(x)]
-    for field_id, display_name in names.items():
-        display = _norm(str(display_name))
-        if not display:
-            continue
-        if any(keyword in display for keyword in normalized_keywords):
+    for keyword in normalized_keywords:
+        for field_id, display_name in names.items():
+            display = _norm(str(display_name))
+            if not display or keyword not in display:
+                continue
             value = fields.get(field_id)
             if _has_meaningful_value(value):
                 return value
     global_map = field_name_map or {}
-    for field_id, value in fields.items():
-        display_name = _norm(str(global_map.get(field_id, "")))
-        if not display_name:
-            continue
-        if any(keyword in display_name for keyword in normalized_keywords):
+    for keyword in normalized_keywords:
+        for field_id, value in fields.items():
+            display_name = _norm(str(global_map.get(field_id, "")))
+            if not display_name or keyword not in display_name:
+                continue
             if _has_meaningful_value(value):
                 return value
     return None
+
+
+def _is_before_stage(current_status: str, *, workflow_order: List[str], target_stage: str) -> bool:
+    """
+    True if current stage is before target stage in workflow_order.
+    If order is unknown, falls back to heuristic by keyword.
+    """
+    cur = _norm(current_status)
+    target = _norm(target_stage)
+    if not cur or not target:
+        return False
+    order = [_norm(x) for x in (workflow_order or []) if _norm(x)]
+    if target in order and cur in order:
+        return order.index(cur) < order.index(target)
+    # heuristic fallback
+    if target in cur:
+        return False
+    # if workflow missing, assume "пси" is later than "стабил"
+    if "пси" in target:
+        return "пси" not in cur and any(x in cur for x in ("формир", "стабил"))
+    return False
 
 
 def _has_distribution_link(release_issue: dict, profile: dict) -> bool:
@@ -762,19 +785,43 @@ def evaluate_gates(
     dist_link_ok = dist_link_ok or dist_from_links["link_present"]
     dist_registered_ok = dist_registered_ok or dist_from_links["registered"]
 
-    dist_gate = {
-        "id": "distribution_tab",
-        "title": "Вкладка Дистрибутивы",
-        "ok": dist_link_ok and dist_registered_ok,
-        "details": {
-            "link_present": dist_link_ok,
-            "registered": dist_registered_ok,
-            "distribution_link_value": _value_to_text(dist_link_value)[:300],
-            "distribution_ke_value": _value_to_text(dist_ke_value)[:300],
-            "linked_distribution_issue": dist_from_links,
-        },
-    }
-    (auto_passed if dist_gate["ok"] else auto_failed).append(dist_gate)
+    # Business rule: distribution registration becomes available only at "ПСИ".
+    # Before PSI we must not block the transition by this gate.
+    before_psi = _is_before_stage(
+        current_status,
+        workflow_order=profile.get("workflow_order", []),
+        target_stage="ПСИ",
+    )
+    if before_psi:
+        dist_gate = {
+            "id": "distribution_tab",
+            "title": "Вкладка Дистрибутивы",
+            "ok": True,
+            "details": {
+                "not_applicable": True,
+                "reason": "До этапа «ПСИ» регистрация дистрибутива недоступна — гейт не применяется.",
+                "link_present": dist_link_ok,
+                "registered": dist_registered_ok,
+                "distribution_link_value": _value_to_text(dist_link_value)[:300],
+                "distribution_ke_value": _value_to_text(dist_ke_value)[:300],
+                "linked_distribution_issue": dist_from_links,
+            },
+        }
+        auto_passed.append(dist_gate)
+    else:
+        dist_gate = {
+            "id": "distribution_tab",
+            "title": "Вкладка Дистрибутивы",
+            "ok": dist_link_ok and dist_registered_ok,
+            "details": {
+                "link_present": dist_link_ok,
+                "registered": dist_registered_ok,
+                "distribution_link_value": _value_to_text(dist_link_value)[:300],
+                "distribution_ke_value": _value_to_text(dist_ke_value)[:300],
+                "linked_distribution_issue": dist_from_links,
+            },
+        }
+        (auto_passed if dist_gate["ok"] else auto_failed).append(dist_gate)
 
     recommendation_gate = {
         "id": "testing_recommendation",
