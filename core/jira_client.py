@@ -3,6 +3,7 @@
 Перенесено из service.py с сохранением поведения и интерфейса (JiraService).
 """
 import logging
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -11,6 +12,35 @@ import warnings
 from config import JiraConfig
 
 warnings.filterwarnings("ignore")
+
+
+def _jira_response_error_hint(response: Any) -> str:
+    """Краткий текст из тела ответа Jira (errorMessages / errors / сырой фрагмент)."""
+    if response is None:
+        return ""
+    try:
+        j = response.json()
+    except Exception:
+        try:
+            text = (getattr(response, "text", None) or "").strip()
+            return text[:600] if text else ""
+        except Exception:
+            return ""
+    parts: List[str] = []
+    for m in j.get("errorMessages") or []:
+        if m:
+            parts.append(str(m))
+    errs = j.get("errors") or {}
+    if isinstance(errs, dict) and errs:
+        for k, v in errs.items():
+            parts.append(f"{k}: {v}")
+    if parts:
+        return "; ".join(parts)[:800]
+    try:
+        text = (getattr(response, "text", None) or "").strip()
+        return text[:600] if text else ""
+    except Exception:
+        return ""
 
 
 class JiraService:
@@ -469,10 +499,13 @@ class JiraService:
                     f"{issue_key} переведена в статус "
                     f"'{matched_transition.get('name')}'",
                 )
-            return (
-                False,
-                f"Jira вернул код {response.status_code} при переводе {issue_key}",
+            hint = _jira_response_error_hint(response)
+            msg = (
+                f"Jira вернул код {response.status_code} при переводе {issue_key}"
             )
+            if hint:
+                msg += f". {hint}"
+            return (False, msg)
         except Exception as e:
             self.logger.error(
                 "Ошибка перевода %s в '%s': %s",
@@ -481,6 +514,93 @@ class JiraService:
                 e,
             )
             return False, f"Ошибка перевода статуса: {e}"
+
+    @staticmethod
+    def _norm_status_label(name: str) -> str:
+        return re.sub(r"\s+", " ", (name or "").strip().lower())
+
+    @staticmethod
+    def find_transition_to_status(
+        transitions: List[dict], target_status: str
+    ) -> Optional[dict]:
+        """
+        Находит переход, у которого to.name совпадает с целевым статусом workflow.
+        Ориентация на статус назначения, а не на id или имя кнопки перехода.
+        """
+        want = JiraService._norm_status_label(target_status)
+        if not want:
+            return None
+        for t in transitions or []:
+            to = t.get("to") or {}
+            to_name = JiraService._norm_status_label(to.get("name") or "")
+            if to_name == want:
+                return t
+        return None
+
+    def transition_issue_to_status(
+        self, issue_key: str, target_status: str
+    ) -> Tuple[bool, str]:
+        """
+        Перевод в целевой статус по имени статуса назначения (поле to в API transitions).
+        Не использует захардкоженные transition id.
+        """
+        safe_key = (issue_key or "").strip().upper()
+        if not safe_key:
+            return False, "Не указан issue_key"
+        ts = (target_status or "").strip()
+        if not ts:
+            return False, "Не указан целевой статус"
+        try:
+            transitions = self.get_available_transitions(safe_key)
+            if not transitions:
+                return (
+                    False,
+                    f"Для {safe_key} нет доступных переходов (проверь права и ключ).",
+                )
+            matched = self.find_transition_to_status(transitions, ts)
+            if not matched:
+                opts = "; ".join(
+                    f"«{(t.get('to') or {}).get('name', '?')}» "
+                    f"(кнопка: {t.get('name', '?')})"
+                    for t in transitions
+                )
+                return (
+                    False,
+                    f"Из текущего статуса нет перехода в «{ts}» для {safe_key}. "
+                    f"Куда можно перейти: {opts}. Сверь названия в workflow_order с Jira.",
+                )
+            tid = matched.get("id")
+            if tid is None:
+                return False, "Jira не вернула id перехода"
+            response = self.jira.post(
+                f"/rest/api/2/issue/{safe_key}/transitions",
+                data={"transition": {"id": str(tid)}},
+                advanced_mode=True,
+            )
+            if response.status_code in (200, 204):
+                to_name = (matched.get("to") or {}).get("name") or ts
+                return (
+                    True,
+                    f"{safe_key} переведён в статус «{to_name}» "
+                    f"(действие «{matched.get('name', '')}»)",
+                )
+            hint = _jira_response_error_hint(response)
+            msg = (
+                f"Jira вернул код {response.status_code} при переходе в «{ts}» "
+                f"({safe_key})"
+            )
+            if hint:
+                msg += f". {hint}"
+            if response.status_code >= 500:
+                msg += (
+                    " — часто это post-function/плагин в Jira. Попробуй тот же переход в UI."
+                )
+            return (False, msg)
+        except Exception as e:
+            self.logger.error(
+                "Ошибка перевода %s в статус «%s»: %s", safe_key, ts, e
+            )
+            return False, f"Ошибка перехода в статус: {e}"
 
     def transition_issue_by_id(
         self, issue_key: str, transition_id: str
@@ -491,6 +611,18 @@ class JiraService:
         if not safe_key or not safe_transition_id:
             return False, "Не указан issue_key или transition_id"
         try:
+            transitions = self.get_available_transitions(safe_key)
+            allowed_ids = {str(t.get("id")) for t in transitions if t.get("id") is not None}
+            if transitions and safe_transition_id not in allowed_ids:
+                opts = ", ".join(
+                    f"{t.get('name', '?')} (id {t.get('id')})" for t in transitions
+                )
+                return (
+                    False,
+                    f"Переход id {safe_transition_id} сейчас недоступен для {safe_key}. "
+                    f"Доступно: {opts}. Обнови статус релиза в Jira или transition_ids в профиле.",
+                )
+
             response = self.jira.post(
                 f"/rest/api/2/issue/{safe_key}/transitions",
                 data={"transition": {"id": safe_transition_id}},
@@ -501,10 +633,20 @@ class JiraService:
                     True,
                     f"{safe_key} переведена по transition id {safe_transition_id}",
                 )
-            return (
-                False,
-                f"Jira вернул код {response.status_code} для transition id {safe_transition_id}",
+            hint = _jira_response_error_hint(response)
+            msg = (
+                f"Jira вернул код {response.status_code} для transition id "
+                f"{safe_transition_id}"
             )
+            if hint:
+                msg += f". {hint}"
+            if response.status_code >= 500:
+                msg += (
+                    " — обычно это сбой на стороне Jira (post-function, ScriptRunner, "
+                    "обязательные поля в workflow). Попробуй перевести задачу вручную в UI "
+                    "или обратись к админу Jira."
+                )
+            return (False, msg)
         except Exception as e:
             self.logger.error(
                 "Ошибка перевода %s по transition id %s: %s",

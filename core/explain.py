@@ -75,7 +75,6 @@ def next_actions(result: Dict[str, Any]) -> str:
         return "Сначала устрани ошибку проверки и повтори запуск."
 
     next_stage = _safe_str(result.get("next_allowed_transition"))
-    next_id = _safe_str(result.get("next_allowed_transition_id"))
     ready = bool(result.get("ready_for_transition"))
     manual_pending = result.get("manual_pending") or []
     auto_failed = result.get("auto_failed") or []
@@ -86,8 +85,9 @@ def next_actions(result: Dict[str, Any]) -> str:
     if manual_pending:
         lines.append("2) Подтверди ручные проверки (выбери check_id и отметь OK/FAIL).")
     if ready and next_stage:
-        suffix = f" (transition id: {next_id})" if next_id else ""
-        lines.append(f"3) Можно безопасно выполнить переход -> '{next_stage}'{suffix}.")
+        lines.append(
+            f"3) Можно выполнить переход в статус «{next_stage}» (по данным Jira выберется нужный transition)."
+        )
     elif next_stage:
         lines.append(
             f"3) Следующий этап по workflow: '{next_stage}', но сейчас переход заблокирован."

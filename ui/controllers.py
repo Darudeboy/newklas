@@ -270,7 +270,6 @@ class AppController:
                     return
 
                 next_status = last.get("next_allowed_transition")
-                next_id = last.get("next_allowed_transition_id")
                 if not next_status:
                     self._ui_set_result_text(
                         "Следующий этап не определён (финальный статус или вне workflow)."
@@ -279,16 +278,15 @@ class AppController:
 
                 effective_dry = bool(ctx.get("dry_run", dry_run))
                 if effective_dry:
-                    suffix = f" (transition id: {next_id})" if next_id else ""
                     self._ui_set_result_text(
-                        f"[DRY-RUN] Релиз {safe_release} готов к переходу в '{next_status}'{suffix}. Фактический перевод не выполнен."
+                        f"[DRY-RUN] Релиз {safe_release} готов к переходу в статус «{next_status}» "
+                        f"(по workflow). Фактический перевод не выполнен."
                     )
                     return
 
-                if next_id:
-                    ok, msg = self.jira_service.transition_issue_by_id(safe_release, next_id)
-                else:
-                    ok, msg = self.jira_service.transition_issue(safe_release, next_status)
+                ok, msg = self.jira_service.transition_issue_to_status(
+                    safe_release, next_status
+                )
                 if not ok:
                     self._ui_set_result_text(f"Не удалось перевести релиз: {msg}")
                     return

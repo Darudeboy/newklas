@@ -1,6 +1,6 @@
 """
-Профили release flow (workflow_order, transition_ids, правила Story/Bug, вкладки).
-Перенесено из release_flow_config без изменения логики.
+Профили release flow: порядок статусов workflow, правила Story/Bug, вкладки.
+Переход в Jira выполняется по целевому статусу (to.name), не по transition id.
 """
 import json
 import os
@@ -37,14 +37,6 @@ def _default_profile() -> Dict[str, Any]:
             "Согласование ППСИ",
             "Утверждение ППСИ",
         ],
-        "transition_ids": {
-            "Готов к стабилизации": "15903",
-            "Стабилизация": "15904",
-            "Готов к ПСИ": "15307",
-            "ПСИ": "10105",
-            "Согласование ППСИ": "16311",
-            "Утверждение ППСИ": "16312",
-        },
         "done_statuses": [
             "Done",
             "Closed",

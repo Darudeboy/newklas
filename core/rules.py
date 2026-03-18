@@ -780,18 +780,6 @@ def _is_qgm_technical_error(message: str) -> bool:
     return status in {400, 401, 403, 404, 405, 429, 500, 502, 503, 504}
 
 
-def _resolve_transition_id(
-    profile: dict, next_status: Optional[str]
-) -> Optional[str]:
-    if not next_status:
-        return None
-    transition_ids = profile.get("transition_ids", {}) or {}
-    transition_id = transition_ids.get(next_status)
-    if transition_id is None:
-        return None
-    return str(transition_id)
-
-
 def evaluate_gates(
     snapshot: Dict[str, Any],
     profile: dict,
@@ -1122,7 +1110,6 @@ def evaluate_gates(
     next_status = _next_transition(
         current_status, profile.get("workflow_order", [])
     )
-    next_transition_id = _resolve_transition_id(profile, next_status)
     ready_for_transition = (
         len(auto_failed) == 0
         and len(manual_pending) == 0
@@ -1136,7 +1123,7 @@ def evaluate_gates(
         "profile_name": profile.get("name", "default"),
         "current_stage": current_status,
         "next_allowed_transition": next_status,
-        "next_allowed_transition_id": next_transition_id,
+        "next_allowed_transition_id": None,
         "ready_for_transition": ready_for_transition,
         "auto_passed": auto_passed,
         "auto_failed": auto_failed,

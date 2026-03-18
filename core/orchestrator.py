@@ -1,7 +1,7 @@
 """
 Единая точка входа: проверка гейтов релиза и выполнение перехода.
 run_release_check: сбор snapshot → rules → учёт manual_confirmations → результат.
-run_release_action: переход по transition_id или имени статуса.
+run_release_action: переход в целевой статус workflow (to.name) или по id/имени кнопки.
 """
 import logging
 from typing import Any, Dict, Optional, Tuple
@@ -121,20 +121,24 @@ def run_release_action(
     release_key: str,
     transition_id: Optional[str] = None,
     transition_name: Optional[str] = None,
+    target_status: Optional[str] = None,
 ) -> tuple[bool, str]:
     """
-    Выполнить переход релиза. Либо transition_id, либо transition_name.
-    Возвращает (ok, message).
+    Выполнить переход релиза.
+    Приоритет: target_status (статус назначения в Jira) → transition_id → transition_name.
     """
     safe_release = (release_key or "").strip().upper()
     if not safe_release:
         return False, "Не указан release_key."
 
+    ts = (target_status or "").strip()
+    if ts:
+        return jira_service.transition_issue_to_status(safe_release, ts)
     if transition_id:
         return jira_service.transition_issue_by_id(safe_release, transition_id)
     if transition_name:
         return jira_service.transition_issue(safe_release, transition_name)
-    return False, "Не указан transition_id или transition_name."
+    return False, "Укажи target_status (рекомендуется), transition_id или transition_name."
 
 
 def format_release_gate_report(result: Dict[str, Any]) -> str:
@@ -148,9 +152,7 @@ def format_release_gate_report(result: Dict[str, Any]) -> str:
     lines.append("=" * 80)
     lines.append(f"Профиль: {result.get('profile_name')} | Проект: {result.get('project_key')}")
     lines.append(f"Текущий этап: {result.get('current_stage')}")
-    lines.append(f"Следующий этап: {result.get('next_allowed_transition') or 'нет'}")
-    if result.get("next_allowed_transition_id"):
-        lines.append(f"Transition ID: {result.get('next_allowed_transition_id')}")
+    lines.append(f"Следующий этап (статус workflow): {result.get('next_allowed_transition') or 'нет'}")
     rqg_qgm = result.get("rqg_qgm", {}) or {}
     if rqg_qgm.get("ok"):
         lines.append("RQG qgm: успешно")
