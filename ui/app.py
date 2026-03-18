@@ -48,6 +48,10 @@ class ModernJiraApp(ctk.CTk):
 
         self._build_layout()
         self._wire_controller()
+        try:
+            self.tech_panel.refresh()
+        except Exception:
+            pass
 
         self.after(100, self.controller.check_connection_async)
         self.after(200, lambda: show_onboarding_if_needed(self))

@@ -23,7 +23,9 @@ class TechPanel(ctk.CTkFrame):
 
         self.text = ctk.CTkTextbox(self, font=font(12), wrap="none")
         self.text.pack(fill="both", expand=True, padx=16, pady=(0, 16))
-        self.refresh()
+        self.text.configure(state="normal")
+        self.text.insert("1.0", "Нажми «Обновить», чтобы увидеть snapshot/result.\n")
+        self.text.configure(state="normal")
 
     def refresh(self) -> None:
         snapshot, result = self._get_context()
