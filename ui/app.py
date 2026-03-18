@@ -11,6 +11,7 @@ from core.assistant import build_default_assistant
 from core.jira_client import JiraService
 from history import OperationHistory
 from onboarding import show_onboarding_if_needed
+from ui.clipboard_utf8 import install_utf8_clipboard_support
 from ui.chat_panel import ChatPanel
 from ui.controllers import AppController
 from ui.forms import MainFormPanel
@@ -52,6 +53,11 @@ class ModernJiraApp(ctk.CTk):
             self.tech_panel.refresh()
         except Exception:
             pass
+
+        self.after(
+            80,
+            lambda: install_utf8_clipboard_support(self),
+        )
 
         self.after(100, self.controller.check_connection_async)
         self.after(200, lambda: show_onboarding_if_needed(self))
