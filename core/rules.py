@@ -13,6 +13,22 @@ def _norm(value: str) -> str:
     return (value or "").strip().lower()
 
 
+def _is_terminal_stage(status_name: str) -> bool:
+    """
+    Terminal/final stage: checks are not applicable and must not block.
+
+    Business rule (controlled redesign): for already approved/done releases
+    we short-circuit evaluation to avoid false blockers.
+    """
+    s = _norm(status_name)
+    if not s:
+        return False
+    if "утвержд" in s:
+        return True
+    terminal_markers = ("done", "closed", "resolved", "закры", "выполн", "готово")
+    return any(marker in s for marker in terminal_markers)
+
+
 def _contains_any(text: str, keywords: List[str]) -> bool:
     lowered = _norm(text)
     return any(_norm(word) in lowered for word in (keywords or []))
@@ -542,6 +558,35 @@ def evaluate_gates(
     release_key = snapshot["release_key"]
     project_key = snapshot.get("project_key", "")
 
+    current_status = _extract_issue_status(release_issue)
+    if _is_terminal_stage(current_status):
+        reason = f"Этап финальный ('{current_status}'): проверки не актуальны."
+        return {
+            "success": True,
+            "terminal_stage": True,
+            "terminal_reason": reason,
+            "release_key": release_key,
+            "project_key": project_key,
+            "profile_name": profile.get("name", "default"),
+            "current_stage": current_status,
+            "next_allowed_transition": None,
+            "next_allowed_transition_id": None,
+            "ready_for_transition": False,
+            "auto_passed": [],
+            "auto_failed": [],
+            "auto_warnings": [],
+            "manual_pending": [],
+            "manual_optional": [],
+            "manual_done": [],
+            "story_results": [],
+            "bug_results": [],
+            "rqg_qgm": {
+                "ok": snapshot.get("qgm_ok", False),
+                "message": snapshot.get("qgm_message", ""),
+                "payload": snapshot.get("qgm_payload") or {},
+            },
+        }
+
     story_results: List[Dict[str, Any]] = []
     bug_results: List[Dict[str, Any]] = []
 
@@ -763,7 +808,6 @@ def evaluate_gates(
         item for item in manual_raw if item.get("status") == "optional_missing"
     ]
 
-    current_status = _extract_issue_status(release_issue)
     next_status = _next_transition(
         current_status, profile.get("workflow_order", [])
     )

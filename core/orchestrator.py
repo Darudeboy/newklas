@@ -156,6 +156,12 @@ def format_release_gate_report(result: Dict[str, Any]) -> str:
         lines.append("RQG qgm: успешно")
     lines.append("")
 
+    if result.get("terminal_stage"):
+        reason = result.get("terminal_reason") or "Этап финальный: проверки не актуальны."
+        lines.append(f"✅ {reason}")
+        lines.append("=" * 80)
+        return "\n".join(lines)
+
     lines.append(f"✅ Авто-гейты пройдены: {len(result.get('auto_passed', []))}")
     for gate in result.get("auto_passed", []):
         details = gate.get("details") or {}
