@@ -343,6 +343,119 @@ def _is_recommendation_in_rendered(
     return False
 
 
+def _normalize_testing_html_fragment(raw: str) -> str:
+    low = (raw or "").lower()
+    low = re.sub(r"<[^>]+>", " ", low)
+    return re.sub(r"\s+", " ", low).strip()
+
+
+def _is_dt_recommended_deep(
+    release_issue: dict,
+    approved_keywords: Optional[List[str]] = None,
+) -> bool:
+    """
+    ДТ часто рендерится одной плашкой далеко от текста «Рекомендация ДТ» в HTML,
+    или лежит в отдельном крупном rendered-поле. Обычного окна 1200 символов мало.
+    """
+    approved = list(approved_keywords or ["рекомендован", "recommended"])
+    approved_norm = [_norm(k) for k in approved if _norm(k)]
+
+    # 1) Все поля Jira, в display name которых явно про ДТ + рекомендация
+    names = release_issue.get("names") or {}
+    fields = release_issue.get("fields") or {}
+    if isinstance(names, dict):
+        for fid, disp in names.items():
+            d = _norm(str(disp))
+            if not d:
+                continue
+            is_dt_field = ("рекомендац" in d and "дт" in d) or (
+                "recommendation" in d and "дт" in d
+            ) or re.search(r"\bdt\s+recommendation\b", d, flags=re.IGNORECASE)
+            if not is_dt_field:
+                continue
+            val = fields.get(fid)
+            if _has_meaningful_value(val) and _contains_any(
+                _value_to_text(val), approved
+            ):
+                return True
+
+    # «Рекомендация ДТ» = рекомендация + пробел + дт (нельзя писать рекомендац[ияя] — съедает только «и» из «ия»)
+    label_re = re.compile(
+        r"рекомендация\s+дт|рекомендации\s+дт|рекомендация\s+по\s+дт|"
+        r"dt\s+recommendation|dynamic\s+test\s+recommendation",
+        flags=re.IGNORECASE,
+    )
+
+    def _scan_clean(clean: str) -> bool:
+        if not clean or ("дт" not in clean and "dt recommendation" not in clean):
+            return False
+        matches = list(label_re.finditer(clean))
+        for m in reversed(matches):
+            e = m.end()
+            window_f = clean[e : e + 20000]
+            pos_rec = None
+            for kw in approved_norm:
+                p = window_f.find(kw)
+                if p >= 0 and (pos_rec is None or p < pos_rec):
+                    pos_rec = p
+            if pos_rec is None:
+                continue
+            head = window_f[:pos_rec]
+            tail_check = head[-500:] if len(head) > 500 else head
+            if re.search(
+                r"не\s*рекоменд|not\s*recommended|отказ",
+                tail_check,
+                flags=re.IGNORECASE,
+            ):
+                continue
+            return True
+        return False
+
+    # 2) Все текстовые значения полей (короткое поле «Рекомендация ДТ» + длинное HTML рядом)
+    seen: set[int] = set()
+    chunks: list[str] = []
+    for container in (
+        release_issue.get("renderedFields") or {},
+        release_issue.get("fields") or {},
+    ):
+        if not isinstance(container, dict):
+            continue
+        for v in container.values():
+            if not isinstance(v, str) or not v.strip():
+                continue
+            low = v.lower()
+            take = len(v) >= 80 or "рекомендац" in low or "дт" in low or "ift" in low
+            if not take:
+                continue
+            vid = id(v)
+            if vid in seen:
+                continue
+            seen.add(vid)
+            clean = _normalize_testing_html_fragment(v)
+            chunks.append(clean)
+            if _scan_clean(clean):
+                return True
+
+    # 3) Склейка: сначала фрагменты с меткой «Рекомендация ДТ», потом остальные (часто плашка в другом поле)
+    if chunks:
+        has_dt_label: list[str] = []
+        rest_chunks: list[str] = []
+        for c in chunks:
+            if re.search(
+                r"рекомендация\s+дт|dt\s+recommendation",
+                c,
+                flags=re.IGNORECASE,
+            ):
+                has_dt_label.append(c)
+            else:
+                rest_chunks.append(c)
+        ordered = has_dt_label + rest_chunks
+        merged = _normalize_testing_html_fragment(" ".join(ordered))
+        if _scan_clean(merged):
+            return True
+    return False
+
+
 def _evaluate_story(
     story_key: str,
     story_issue: dict,
@@ -760,6 +873,12 @@ def evaluate_gates(
             release_issue,
             testing_tab.get("dt_display_keywords", []),
             testing_tab.get("dt_approved_keywords", []),
+        )
+    if not dt_recommendation_ok:
+        dt_recommendation_ok = _is_dt_recommended_deep(
+            release_issue,
+            approved_keywords=testing_tab.get("dt_approved_keywords")
+            or ["рекомендован", "recommended"],
         )
     if not recommendation_ok:
         recommendation_ok = _is_recommendation_in_rendered(
