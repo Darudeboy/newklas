@@ -187,9 +187,36 @@ def format_release_gate_report(result: Dict[str, Any]) -> str:
             lines.append("    Что сделать: закрой bug CT/IFT (только статус 'Закрыт/Closed').")
     lines.append("")
 
-    lines.append(f"📝 Ручные проверки pending: {len(result.get('manual_pending', []))}")
+    auto_manual = result.get("manual_auto_ok") or []
+    if auto_manual:
+        lines.append(
+            f"✅ Ручные проверки закрыты по данным Jira (подтверждение в инструменте не нужно): {len(auto_manual)}"
+        )
+        for check in auto_manual:
+            lines.append(f"  - {check.get('id')}: {check.get('message')}")
+            fp = (check.get("field_preview") or "").strip()
+            if fp:
+                lines.append(f"    Значение в задаче: {fp}")
+
+    lines.append(f"📝 Ручные проверки pending (нужно действие от вас): {len(result.get('manual_pending', []))}")
     for check in result.get("manual_pending", []):
-        lines.append(f"  - {check.get('id')}: {check.get('message')}")
+        cid = check.get("id") or ""
+        lines.append(f"  - [{cid}] {check.get('title') or cid}")
+        lines.append(f"    Проблема: {check.get('message')}")
+        if cid == "decommission_distribution":
+            lines.append(
+                "    Что сделать: в карточке релиза заполнить поле «Дистрибутивы, выводимые из эксплуатации» "
+                "ИЛИ в инструменте выполнить: confirm_manual_check(<релиз>, decommission_distribution, ok)."
+            )
+        elif cid in ("load_test_subtask", "author_supervision_subtask", "translations_subtask"):
+            lines.append(
+                "    Что сделать: закрыть соответствующую подзадачу в Jira (статус «Закрыт»/Closed) "
+                "или убедиться, что подзадача с нужным текстом в summary существует."
+            )
+        else:
+            lines.append(
+                "    Что сделать: выполнить подтверждение в инструменте или устранить причину, указанную выше."
+            )
     if result.get("auto_warnings"):
         lines.append("")
         lines.append(f"⚠️ ВНИМАНИЕ (рекомендации, не блокируют переход): {len(result.get('auto_warnings', []))}")
@@ -200,8 +227,12 @@ def format_release_gate_report(result: Dict[str, Any]) -> str:
                     lines.append(f"   * 🐛 {reason}")
 
     if result.get("manual_pending"):
-        lines.append("  Подтвердить вручную можно командой:")
-        lines.append(f"  confirm_manual_check({result.get('release_key')}, <check_id>, ok)")
+        lines.append("")
+        lines.append("  Команда подтверждения (если поле в Jira заполнить нельзя, а проверку нужно закрыть вручную):")
+        lines.append(
+            f"  confirm_manual_check({result.get('release_key')}, <check_id>, ok)  "
+            f"— подставь check_id из списка выше (например decommission_distribution)."
+        )
     if result.get("manual_done"):
         lines.append(f"✅ Подтверждено вручную: {len(result.get('manual_done', []))}")
         for check in result.get("manual_done", []):
@@ -215,7 +246,28 @@ def format_release_gate_report(result: Dict[str, Any]) -> str:
     if result.get("ready_for_transition"):
         lines.append("🚀 Готов к переходу по workflow.")
     else:
-        lines.append("⛔ Переход пока заблокирован (есть непройденные гейты или ручные проверки).")
+        lines.append("")
+        lines.append("─── ИТОГ: ПОЧЕМУ НЕЛЬЗЯ ПЕРЕЙТИ ───")
+        reasons: list[str] = []
+        if result.get("auto_failed"):
+            reasons.append(
+                f"• Авто-гейты провалены ({len(result['auto_failed'])} шт.) — см. блок «❌ Авто-гейты провалены» выше."
+            )
+        if result.get("manual_pending"):
+            ids = ", ".join(str(x.get("id")) for x in result["manual_pending"])
+            reasons.append(
+                f"• Не закрыты ручные проверки в инструменте: {ids}. "
+                f"Пока хотя бы одна «pending» — переход по workflow блокируется."
+            )
+        if not (result.get("next_allowed_transition") or "").strip():
+            reasons.append(
+                "• Следующий этап workflow не определён (уже финальный статус или статус не входит в профиль)."
+            )
+        if not reasons:
+            reasons.append("• См. детали выше (авто-гейты и ручные проверки).")
+        for r in reasons:
+            lines.append(r)
+        lines.append("⛔ Переход заблокирован до устранения пунктов выше.")
 
     lines.append("=" * 80)
     return "\n".join(lines)

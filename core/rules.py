@@ -532,6 +532,7 @@ def _evaluate_manual_subtasks(
     release_issue: dict,
     related_issues: List[dict],
     profile: dict,
+    field_name_map: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
     status_by_keyword: List[Dict[str, str]] = []
     all_issues = [release_issue] + related_issues
@@ -552,15 +553,51 @@ def _evaluate_manual_subtasks(
 
     pending: List[Dict[str, Any]] = []
     for check in profile.get("manual_checks", []):
+        check_id = check.get("id") or ""
         keywords = check.get("keywords", [])
         required_statuses = check.get("required_statuses", [])
+
+        # Вывод дистрибутивов из эксплуатации: если в Jira поле уже заполнено — не блокируем переход
+        if check_id == "decommission_distribution":
+            dec_kw = check.get("decommission_display_keywords") or [
+                "выводимые из эксплуатации",
+                "дистрибутивы, выводимые",
+                "вывод из эксплуатации",
+                "decommission",
+            ]
+            val = _find_field_value_by_display_name(
+                release_issue,
+                dec_kw,
+                field_name_map=field_name_map,
+            )
+            if _has_meaningful_value(val):
+                preview = _value_to_text(val).strip()
+                if len(preview) > 200:
+                    preview = preview[:200] + "…"
+                pending.append(
+                    {
+                        "id": check_id,
+                        "title": check.get("title"),
+                        "status": "auto_ok",
+                        "message": (
+                            "Поле «Дистрибутивы, выводимые из эксплуатации» в Jira уже заполнено — "
+                            "ручное подтверждение в инструменте не требуется."
+                        ),
+                        "field_preview": preview,
+                    }
+                )
+                continue
+
         if not keywords:
             pending.append(
                 {
                     "id": check.get("id"),
                     "title": check.get("title"),
                     "status": "manual",
-                    "message": "Требуется ручное подтверждение.",
+                    "message": (
+                        "Требуется явное подтверждение в инструменте (кнопка/команда confirm_manual_check), "
+                        "т.к. автоматически проверить этот пункт по данным Jira нельзя."
+                    ),
                 }
             )
             continue
@@ -1012,11 +1049,14 @@ def evaluate_gates(
     (auto_passed if rqg_gate["ok"] else auto_failed).append(rqg_gate)
 
     manual_raw = _evaluate_manual_subtasks(
-        release_issue, related_issues, profile
+        release_issue, related_issues, profile, field_name_map=field_name_map
     )
     manual_pending = [
-        item for item in manual_raw if item.get("status") != "optional_missing"
+        item
+        for item in manual_raw
+        if item.get("status") not in ("optional_missing", "auto_ok")
     ]
+    manual_auto_ok = [item for item in manual_raw if item.get("status") == "auto_ok"]
     manual_optional = [
         item for item in manual_raw if item.get("status") == "optional_missing"
     ]
@@ -1044,6 +1084,7 @@ def evaluate_gates(
         "auto_failed": auto_failed,
         "auto_warnings": auto_warnings,
         "manual_pending": manual_pending,
+        "manual_auto_ok": manual_auto_ok,
         "manual_optional": manual_optional,
         "manual_done": [],
         "story_results": story_results,
