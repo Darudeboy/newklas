@@ -49,6 +49,16 @@ TEAM_NAME = os.getenv("TEAM_NAME", "Команда")
 RELEASE_FLOW_HOTFIX_PROJECTS = os.getenv("RELEASE_FLOW_HOTFIX_PROJECTS", "HOTFIX,HF")
 RELEASE_FLOW_PROFILE_OVERRIDES = os.getenv("RELEASE_FLOW_PROFILE_OVERRIDES", "")
 
+# GigaChat (Sber HR IFT) — опционально для чата в UI
+# GIGACHAT_USERNAME / GIGACHAT_PASSWORD — обязательны для вызова API
+# Остальное можно переопределить при смене стенда
+GIGACHAT_ENABLED = os.getenv("GIGACHAT_USE_FOR_CHAT", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
 
 def validate_config() -> bool:
     """Проверка наличия обязательных параметров."""

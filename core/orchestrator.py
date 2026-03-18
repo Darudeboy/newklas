@@ -169,6 +169,15 @@ def format_release_gate_report(result: Dict[str, Any]) -> str:
         details = gate.get("details") or {}
         if gate.get("id") == "rqg_qgm" and details.get("warning_only"):
             lines.append(f"  - {gate.get('title')} (warning: endpoint недоступен, не блокирует)")
+        elif gate.get("id") == "distribution_tab" and details.get(
+            "registered_via_nexus_urls"
+        ):
+            lines.append(
+                f"  - {gate.get('title')} — ок: в задаче есть прямые URL на артефакты "
+                f"(Nexus/repository); отдельное поле «зарегистрирован»/КЭ не требуется"
+            )
+        elif gate.get("id") == "distribution_tab" and details.get("not_applicable"):
+            lines.append(f"  - {gate.get('title')} (до ПСИ не проверяется)")
         else:
             lines.append(f"  - {gate.get('title')}")
     lines.append(f"❌ Авто-гейты провалены: {len(result.get('auto_failed', []))}")
@@ -176,7 +185,10 @@ def format_release_gate_report(result: Dict[str, Any]) -> str:
         lines.append(f"  - {gate.get('title')}: {gate.get('details')}")
         gate_id = gate.get("id")
         if gate_id == "distribution_tab":
-            lines.append("    Что сделать: проверь поля 'Ссылка на дистрибутив' и 'КЭ дистрибутива'.")
+            lines.append(
+                "    Что сделать: укажи ссылку(и) на дистрибутив в Nexus (ZIP) или заполни "
+                "поля «зарегистрирован»/КЭ в Jira."
+            )
         elif gate_id == "testing_recommendation":
             lines.append(
                 "    Что сделать: в Jira в блоке «Отчёт о тестировании» статус «Рекомендация по отчёту ИФТ» "

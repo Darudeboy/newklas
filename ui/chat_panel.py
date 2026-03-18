@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import threading
+import tkinter as tk
+
 import customtkinter as ctk
+
+_GIGA_WAIT = "⏳ GigaChat…"
 
 from core.assistant import Assistant
 from ui.styles import font
@@ -56,7 +61,7 @@ class ChatPanel(ctk.CTkFrame):
         self.send_btn.pack(side="right", pady=8)
 
         self.append(
-            "Assistant готов. Сначала запусти проверку релиза, затем можешь спросить «почему заблокировано?».\n"
+            "Assistant готов. Запусти проверку релиза, затем спроси про гейты или напиши команду БТ.\n"
         )
 
     def append(self, text: str) -> None:
@@ -75,9 +80,44 @@ class ChatPanel(ctk.CTkFrame):
 
         if callable(self._execute_command):
             cmd_result = self._execute_command(q)
-            if cmd_result:
+            if cmd_result is not None:
                 self.append(f"Assistant: {cmd_result}\n")
                 return
+
+        use_thread = getattr(self._assistant, "gigachat_active", lambda: False)()
+        if use_thread:
+            try:
+                self.send_btn.configure(state="disabled")
+                self.append(f"Assistant: {_GIGA_WAIT}\n")
+            except Exception:
+                pass
+
+            def work() -> None:
+                try:
+                    ans = self._assistant.reply(q, snapshot=snapshot, result=result)
+                except Exception as e:
+                    ans = f"Ошибка: {e}"
+
+                def done() -> None:
+                    try:
+                        self.chat.configure(state="normal")
+                        pos = self.chat.search(_GIGA_WAIT, "1.0", tk.END, backwards=True)
+                        if pos:
+                            ls = self.chat.index(f"{pos} linestart")
+                            le = self.chat.index(f"{pos} lineend + 1 char")
+                            self.chat.delete(ls, le)
+                    except Exception:
+                        pass
+                    self.append(f"Assistant: {ans}\n")
+                    try:
+                        self.send_btn.configure(state="normal")
+                    except Exception:
+                        pass
+
+                self.after(0, done)
+
+            threading.Thread(target=work, daemon=True).start()
+            return
 
         answer = self._assistant.reply(q, snapshot=snapshot, result=result)
         self.append(f"Assistant: {answer}\n")

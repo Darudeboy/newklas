@@ -98,12 +98,9 @@ class AppController:
     def get_context(self) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         return self.state.last_snapshot, self.state.last_result
 
-    def execute_chat_command(self, text: str) -> str:
+    def execute_chat_command(self, text: str) -> Optional[str]:
         """
-        Deterministic command handler for chat panel (no LLM).
-
-        Supported:
-        - "собери бизнес-требования для HRPRELEASE-12345" (+ optional "проект HRM")
+        Команды без LLM. Возвращает текст ответа или None — тогда ответ даёт GigaChat/rule-based.
         """
         raw = (text or "").strip()
         lowered = raw.lower()
@@ -118,7 +115,7 @@ class AppController:
             self.run_business_requirements(release_key=release_key, project_key=project_key or None)
             return f"Запускаю сбор БТ/FR для {release_key}" + (f" (проект {project_key})" if project_key else "") + ". Результат появится во вкладке «Результаты»."
 
-        return "Я понимаю только: summary/blockers/next actions и команды БТ/FR (например: «собери бизнес-требования для HRPRELEASE-12345, проект HRM»)."
+        return None
 
     def check_connection_async(self) -> None:
         def worker():

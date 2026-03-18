@@ -280,6 +280,48 @@ def _is_distribution_registered(
     return False
 
 
+def _distribution_nexus_artifacts_imply_registered(
+    release_issue: dict,
+    profile: dict,
+    field_name_map: Optional[Dict[str, str]] = None,
+) -> bool:
+    """
+    На ПСИ часто в «Ссылка на дистрибутив» лежат прямые URL на ZIP в Nexus,
+    без отдельного поля «зарегистрирован» / КЭ. Такую выкладку считаем достаточной.
+    """
+    fields = release_issue.get("fields", {}) or {}
+    tab = profile.get("distribution_tab", {}) or {}
+    chunks: list[str] = []
+    v = _find_issue_value_by_candidates(fields, tab.get("link_fields", []))
+    if v is not None:
+        chunks.append(_value_to_text(v))
+    v2 = _find_field_value_by_display_name(
+        release_issue,
+        tab.get("link_display_keywords", []),
+        field_name_map=field_name_map,
+    )
+    if v2 is not None:
+        chunks.append(_value_to_text(v2))
+    def _urls_ok(blob: str) -> bool:
+        b = (blob or "").lower()
+        if not b or "http" not in b:
+            return False
+        if not (".zip" in b or ".tar.gz" in b or ".tgz" in b):
+            return False
+        if "maven-distr" in b or "maven_distr" in b:
+            return True
+        if "nexus" in b and "repository" in b:
+            return True
+        if b.count("https://") >= 2:
+            return True
+        return False
+
+    primary = " ".join(chunks).strip()
+    if _urls_ok(primary):
+        return True
+    return _urls_ok(_flatten_issue_fields(release_issue))
+
+
 def _ift_recommended_from_rendered_html(release_issue: dict) -> Optional[bool]:
     """
     Только в контексте блока «рекомендация по отчёту ИФТ».
@@ -999,6 +1041,14 @@ def evaluate_gates(
     dist_link_ok = dist_link_ok or dist_from_links["link_present"]
     dist_registered_ok = dist_registered_ok or dist_from_links["registered"]
 
+    registered_via_nexus = False
+    if dist_link_ok and not dist_registered_ok:
+        if _distribution_nexus_artifacts_imply_registered(
+            release_issue, profile, field_name_map=field_name_map
+        ):
+            dist_registered_ok = True
+            registered_via_nexus = True
+
     # Business rule: distribution registration becomes available only at "ПСИ".
     # Before PSI we must not block the transition by this gate.
     before_psi = _is_before_stage(
@@ -1019,6 +1069,7 @@ def evaluate_gates(
                 "distribution_link_value": _value_to_text(dist_link_value)[:300],
                 "distribution_ke_value": _value_to_text(dist_ke_value)[:300],
                 "linked_distribution_issue": dist_from_links,
+                "registered_via_nexus_urls": registered_via_nexus,
             },
         }
         auto_passed.append(dist_gate)
@@ -1033,6 +1084,7 @@ def evaluate_gates(
                 "distribution_link_value": _value_to_text(dist_link_value)[:300],
                 "distribution_ke_value": _value_to_text(dist_ke_value)[:300],
                 "linked_distribution_issue": dist_from_links,
+                "registered_via_nexus_urls": registered_via_nexus,
             },
         }
         (auto_passed if dist_gate["ok"] else auto_failed).append(dist_gate)

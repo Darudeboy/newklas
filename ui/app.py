@@ -7,7 +7,7 @@ from tkinter import messagebox
 import customtkinter as ctk
 
 from config import JiraConfig
-from core.assistant import build_default_assistant
+from core.gigachat_assistant import build_assistant
 from core.jira_client import JiraService
 from history import OperationHistory
 from onboarding import show_onboarding_if_needed
@@ -45,7 +45,7 @@ class ModernJiraApp(ctk.CTk):
             except Exception:
                 pass
 
-        self.assistant = build_default_assistant()
+        self.assistant = build_assistant()
 
         self._build_layout()
         self._wire_controller()
@@ -122,6 +122,11 @@ class ModernJiraApp(ctk.CTk):
             execute_command=lambda text: self.controller.execute_chat_command(text),
         )
         self.chat_panel.pack(fill="both", expand=True)
+        if getattr(self.assistant, "gigachat_active", lambda: False)():
+            self.chat_panel.append(
+                "GigaChat подключён: свободные вопросы в чате уходят в модель "
+                "(контекст — последняя проверка гейтов). Команды БТ и кнопки слева — без LLM.\n"
+            )
 
         self.tech_panel = TechPanel(
             self.tab_tech, get_context=lambda: self.controller.get_context()
