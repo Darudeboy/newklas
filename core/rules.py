@@ -29,6 +29,11 @@ def _is_terminal_stage(status_name: str) -> bool:
     return any(marker in s for marker in terminal_markers)
 
 
+def _is_ppsi_approval_stage(status_name: str) -> bool:
+    # Exact business status name (source of truth).
+    return _norm(status_name) == _norm("Утверждение ППСИ")
+
+
 def _contains_any(text: str, keywords: List[str]) -> bool:
     lowered = _norm(text)
     return any(_norm(word) in lowered for word in (keywords or []))
@@ -559,6 +564,36 @@ def evaluate_gates(
     project_key = snapshot.get("project_key", "")
 
     current_status = _extract_issue_status(release_issue)
+    if _is_ppsi_approval_stage(current_status):
+        reason = (
+            "Релиз уже в статусе 'Утверждение ППСИ': по процессу Jira все гейты пройдены, "
+            "дополнительные проверки не требуются."
+        )
+        return {
+            "success": True,
+            "terminal_stage": True,
+            "terminal_reason": reason,
+            "release_key": release_key,
+            "project_key": project_key,
+            "profile_name": profile.get("name", "default"),
+            "current_stage": current_status,
+            "next_allowed_transition": None,
+            "next_allowed_transition_id": None,
+            "ready_for_transition": False,
+            "auto_passed": [],
+            "auto_failed": [],
+            "auto_warnings": [],
+            "manual_pending": [],
+            "manual_optional": [],
+            "manual_done": [],
+            "story_results": [],
+            "bug_results": [],
+            "rqg_qgm": {
+                "ok": snapshot.get("qgm_ok", False),
+                "message": snapshot.get("qgm_message", ""),
+                "payload": snapshot.get("qgm_payload") or {},
+            },
+        }
     if _is_terminal_stage(current_status):
         reason = f"Этап финальный ('{current_status}'): проверки не актуальны."
         return {
