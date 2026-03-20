@@ -15,6 +15,14 @@ class Assistant(Protocol):
         result: Optional[Dict[str, Any]] = None,
     ) -> str: ...
 
+    def extract_command_intent_json(
+        self,
+        question: str,
+        *,
+        snapshot: Optional[Dict[str, Any]] = None,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]: ...
+
     def quick_summary(self, *, result: Dict[str, Any]) -> str: ...
 
     def quick_blockers(self, *, result: Dict[str, Any]) -> str: ...
@@ -37,6 +45,16 @@ class RuleBasedAssistant:
         result: Optional[Dict[str, Any]] = None,
     ) -> str:
         return explain.answer(question, snapshot=snapshot, result=result)
+
+    def extract_command_intent_json(
+        self,
+        question: str,
+        *,
+        snapshot: Optional[Dict[str, Any]] = None,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        # Safe default: only rule-based commands are executable in this mode.
+        return None
 
     def quick_summary(self, *, result: Dict[str, Any]) -> str:
         return explain.summarize(result)

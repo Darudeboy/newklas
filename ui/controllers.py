@@ -105,7 +105,14 @@ class AppController:
     def get_context(self) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         return self.state.last_snapshot, self.state.last_result
 
-    def execute_chat_command(self, text: str) -> Optional[str]:
+    def execute_chat_command(
+        self,
+        text: str,
+        *,
+        snapshot: Optional[Dict[str, Any]] = None,
+        result: Optional[Dict[str, Any]] = None,
+        assistant: Any = None,
+    ) -> Optional[str]:
         """
         Команды без LLM: релиз, RQG, проверки, линки, deploy plan, workflow.
         Возвращает текст ответа или None — тогда ответ даёт GigaChat/rule-based.
@@ -264,6 +271,196 @@ class AppController:
                 + (f" (проект {project_key})" if project_key else "")
                 + ". Результат — «Результаты»."
             )
+
+        # --- LLM intent fallback (when rule/regex didn't match) ---
+        # LLM doesn't execute arbitrary actions: it returns only intent,
+        # and we dispatch strictly via an allowlist.
+        looks_like_command = any(
+            token in lowered
+            for token in (
+                "rqg",
+                "гей",
+                "провери",
+                "провер",
+                "статус",
+                "собери",
+                "линк",
+                "привяж",
+                "убери",
+                "cleanup",
+                "деплой",
+                "deploy plan",
+                "опублику",
+                "следующ",
+                "двигай",
+                "шаг",
+                "переход",
+                "workflow",
+                "бизнес",
+                "bt",
+                "бт",
+                "fr",
+                "треб",
+            )
+        )
+
+        if (
+            looks_like_command
+            and assistant
+            and callable(getattr(assistant, "extract_command_intent_json", None))
+        ):
+            spec = assistant.extract_command_intent_json(
+                raw, snapshot=snapshot, result=result
+            )
+            if not isinstance(spec, dict):
+                spec = None
+
+            # If LLM couldn't confidently classify, don't fall back to free-form
+            # assistant.reply(): return a short clarification (avoid a second LLM call).
+            if not spec:
+                return (
+                    "Не понял команду. Поддерживаем: RQG, проверка/статус релиза, "
+                    "собери релиз (линк по fixVersion), cleanup, деплой план, следующий шаг, "
+                    "переход по workflow, БТ/FR."
+                )
+
+            intent = spec.get("intent")
+            confidence = spec.get("confidence", 0.0)
+
+            try:
+                confidence_f = float(confidence)
+            except Exception:
+                confidence_f = 0.0
+
+            allowed_intents = {
+                "rqg_check": "rqg_check",
+                "release_check": "release_check",
+                "status_release": "status_release",
+                "deploy_plan_pipeline": "deploy_plan_pipeline",
+                "create_deploy_plan": "create_deploy_plan",
+                "link_issues": "link_issues",
+                "cleanup_issues": "cleanup_issues",
+                "next_release_step": "next_release_step",
+                "move_release_if_ready": "move_release_if_ready",
+                "business_requirements": "business_requirements",
+                "none": "none",
+            }
+
+            if not isinstance(intent, str) or intent not in allowed_intents:
+                return (
+                    "Не распознал команду. Поддерживаем: RQG, проверка/статус релиза, "
+                    "собери релиз (линк по fixVersion), cleanup, деплой план, следующий шаг, "
+                    "переход по workflow, БТ/FR."
+                )
+
+            if intent == "none" or confidence_f < 0.55:
+                return (
+                    "Не уверен, какую команду ты хотел(а). Попробуй явнее: "
+                    "«проведи RQG», «проверь гейты/статус релиза», «собери релиз (fixVersion)», "
+                    "«убери лишние», «собери/опубликуй деплой план», «следующий шаг», "
+                    "«выполни переход», «собери БТ/FR»."
+                )
+
+            # Dispatch: exactly one mapped command.
+            if intent == "rqg_check":
+                if not release_key:
+                    return "Укажи ключ релиза в сообщении или в поле Release key."
+                self.run_rqg_check(release_key=release_key)
+                return f"Запускаю RQG для {release_key}. Смотри вкладку «Результаты»."
+
+            if intent in ("release_check", "status_release"):
+                if not release_key:
+                    return "Укажи ключ релиза в сообщении или в поле Release key."
+                self.run_release_check(
+                    release_key=release_key,
+                    profile=profile,
+                    dry_run=dry,
+                    post_success_comment=False,
+                )
+                return (
+                    f"Запускаю полную проверку гейтов для {release_key} (как «Проверить»)."
+                )
+
+            if intent == "deploy_plan_pipeline":
+                if not release_key:
+                    return "Укажи ключ релиза в сообщении или в поле Release key."
+                self.run_deploy_plan_pipeline(release_key=release_key)
+                return (
+                    f"Запускаю Master analyze + затем Deploy plan в Confluence для {release_key}."
+                )
+
+            if intent == "create_deploy_plan":
+                if not self.current_analysis or not (self.current_analysis.get("services") or []):
+                    return (
+                        "Сначала выполни «собери деплой план» (Master analyze) — "
+                        "нет сохранённого анализа сервисов."
+                    )
+                self.create_deploy_plan()
+                return "Открыл подтверждение создания Deploy plan (если Confluence настроен)."
+
+            if intent == "link_issues":
+                if not release_key:
+                    return "Укажи ключ релиза в сообщении или в поле Release key."
+                if not fv:
+                    return "Укажи fixVersion в форме — без него линковка не выполняется."
+                if not dry:
+                    ok = self._ui_ask_yes_no(
+                        "Подтверждение",
+                        f"Привязать задачи fixVersion='{fv}' к {release_key}?",
+                    )
+                    if not ok:
+                        return "Отменено."
+                self.link_issues(release_key=release_key, fix_version=fv, dry_run=dry)
+                return f"Запускаю привязку задач fixVersion «{fv}» к {release_key}."
+
+            if intent == "cleanup_issues":
+                if not release_key:
+                    return "Укажи ключ релиза в сообщении или в поле Release key."
+                if not fv:
+                    return "Укажи эталонный fixVersion в форме — по нему оставляем только подходящие задачи."
+                if not dry:
+                    ok = self._ui_ask_yes_no(
+                        "Подтверждение",
+                        f"Очистить связи {release_key}, оставив только fixVersion='{fv}'?",
+                    )
+                    if not ok:
+                        return "Отменено."
+                self.cleanup_issues(release_key=release_key, fix_version=fv, dry_run=dry)
+                return f"Запускаю cleanup связей {release_key} (оставить fixVersion «{fv}»)."
+
+            if intent == "next_release_step":
+                if not release_key:
+                    return "Укажи ключ релиза в сообщении или в поле Release key."
+                self.run_next_release_step(release_key=release_key, dry_run=dry)
+                return f"Следующий шаг guided cycle для {release_key}. Смотри «Результаты»."
+
+            if intent == "move_release_if_ready":
+                if not release_key:
+                    return "Укажи ключ релиза в сообщении или в поле Release key."
+                if not dry:
+                    ok = self._ui_ask_yes_no(
+                        "Подтверждение",
+                        f"Выполнить переход по workflow для {release_key}, если гейты зелёные?",
+                    )
+                    if not ok:
+                        return "Отменено."
+                self.move_release_if_ready(release_key=release_key, dry_run=dry)
+                return f"Пробую выполнить переход по workflow для {release_key}."
+
+            if intent == "business_requirements":
+                if not release_key:
+                    return "Укажи ключ релиза (HRPRELEASE-12345) в сообщении или в поле Release key."
+                # bt3.py запускается внешним subprocess, поэтому подтверждение требуется.
+                ok = self._ui_ask_yes_no(
+                    "Подтверждение",
+                    f"Запустить сбор БТ/FR для {release_key} (bt3.py)?",
+                )
+                if not ok:
+                    return "Отменено."
+                self.run_business_requirements(
+                    release_key=release_key, project_key=project_key or None
+                )
+                return f"Запускаю сбор БТ/FR для {release_key}. Результат — «Результаты»."
 
         return None
 

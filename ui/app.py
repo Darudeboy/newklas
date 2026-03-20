@@ -119,7 +119,9 @@ class ModernJiraApp(ctk.CTk):
             self.tab_assistant,
             assistant=self.assistant,
             get_context=lambda: self.controller.get_context(),
-            execute_command=lambda text: self.controller.execute_chat_command(text),
+            execute_command=lambda text, *, snapshot=None, result=None, assistant=None: self.controller.execute_chat_command(
+                text, snapshot=snapshot, result=result, assistant=assistant
+            ),
         )
         self.chat_panel.pack(fill="both", expand=True)
         if getattr(self.assistant, "gigachat_active", lambda: False)():

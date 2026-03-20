@@ -61,7 +61,8 @@ class ChatPanel(ctk.CTkFrame):
         self.send_btn.pack(side="right", pady=8)
 
         self.append(
-            "Команды в чате (без GigaChat): ключ релиза — в поле Release key или в тексте.\n"
+            "Команды в чате: ключ релиза — в поле Release key или в тексте. "
+            "Часть команд распознаётся LLM, а действия с эффектом — с подтверждением.\n"
             "• запусти RQG / проведи RQG — отчёт RQG (comalarest)\n"
             "• запусти проверку релиза / проверь гейты — полная проверка гейтов\n"
             "• статус релиза — то же, что «Проверить» (сводка по этапу и гейтам)\n"
@@ -90,7 +91,11 @@ class ChatPanel(ctk.CTkFrame):
         self.append(f"\nВы: {q}\n")
 
         if callable(self._execute_command):
-            cmd_result = self._execute_command(q)
+            # Execute deterministic controller commands first.
+            # If it returns non-None, we must NOT call assistant.reply() again.
+            cmd_result = self._execute_command(
+                q, snapshot=snapshot, result=result, assistant=self._assistant
+            )
             if cmd_result is not None:
                 self.append(f"Assistant: {cmd_result}\n")
                 return
