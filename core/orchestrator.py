@@ -199,7 +199,10 @@ def format_release_gate_report(result: Dict[str, Any]) -> str:
         elif gate_id == "dt_recommendation":
             lines.append("    Что сделать: ДТ должна быть 'РЕКОМЕНДОВАН'.")
         elif gate_id == "rqg_qgm":
-            lines.append("    Что сделать: проверь ответ /rest/release/1/qgm по issueId релиза.")
+            lines.append(
+                "    Что сделать: проверь ответ RQG (comalarest/rqgstatus по linkedIssues или fallback "
+                "/rest/release/1/qgm). См. newui/docs/RQG.md."
+            )
         elif gate_id == "story_bug_quality":
             lines.append("    Что сделать: закрой bug CT/IFT (только статус 'Закрыт/Closed').")
     lines.append("")

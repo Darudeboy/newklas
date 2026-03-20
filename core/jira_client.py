@@ -3,6 +3,7 @@
 Перенесено из service.py с сохранением поведения и интерфейса (JiraService).
 """
 import logging
+import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -114,6 +115,33 @@ class JiraService:
         except Exception as e:
             self.logger.error("Ошибка поиска задач: %s", e)
             raise
+
+    def search_issue_keys_by_jql(self, jql: str, limit: int = 5000) -> List[str]:
+        """Возвращает ключи задач по JQL (как в UI Jira для RQG)."""
+        issues = self.search_issues(jql, limit=limit)
+        out: List[str] = []
+        for item in issues:
+            key = (item or {}).get("key")
+            if key:
+                out.append(str(key).strip().upper())
+        return out
+
+    def get_linked_issue_keys_consists_of(self, release_key: str) -> List[str]:
+        """
+        Задачи в составе релиза по типу связи (как кнопка RQG в Jira).
+        JQL: issue in linkedIssues("REL", "<тип связи>")
+        """
+        safe = (release_key or "").strip().upper()
+        if not safe:
+            return []
+        link_type = os.getenv("RQG_LINK_TYPE", "consists of").strip() or "consists of"
+        max_results = int(os.getenv("RQG_LINKED_MAX", "5000") or "5000")
+        jql = f'issue in linkedIssues("{safe}", "{link_type}")'
+        try:
+            return self.search_issue_keys_by_jql(jql, limit=max_results)
+        except Exception as e:
+            self.logger.error("linkedIssues JQL для %s: %s", safe, e)
+            return []
 
     def create_issue_link(self, from_issue: str, to_issue: str, link_type: str) -> bool:
         """Создание связи между задачами."""
@@ -450,6 +478,132 @@ class JiraService:
                 "Ошибка QGM endpoint для issue=%s: %s", safe_issue, e
             )
             return False, f"QGM failed: POST error: {e}", None
+
+    def get_rqgstatus_comalarest(
+        self,
+        release_key: str,
+        linked_issue_key: str,
+        *,
+        is_full_info: bool = True,
+    ) -> Optional[dict]:
+        """
+        Тот же endpoint, что дергает кнопка RQG в Jira:
+        /rest/comalarest/1.0/requirements/rqgstatus
+        """
+        rel = (release_key or "").strip().upper()
+        linked = (linked_issue_key or "").strip().upper()
+        if not rel or not linked:
+            return None
+        url = f"{self.config.url.rstrip('/')}/rest/comalarest/1.0/requirements/rqgstatus"
+        params = {
+            "issueId": rel,
+            "linkedIssueId": linked,
+            "isFullInfo": "true" if is_full_info else "false",
+        }
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Authorization": f"Bearer {self.config.token}",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                headers=headers,
+                timeout=90,
+                verify=self.config.verify_ssl,
+            )
+            if response.status_code != 200:
+                self.logger.warning(
+                    "rqgstatus HTTP %s для %s + %s: %s",
+                    response.status_code,
+                    rel,
+                    linked,
+                    (response.text or "")[:200],
+                )
+                return None
+            data = response.json()
+            return data if isinstance(data, dict) else None
+        except Exception as e:
+            self.logger.error("rqgstatus ошибка %s + %s: %s", rel, linked, e)
+            return None
+
+    def get_official_rqg_bundle(
+        self, release_key: str
+    ) -> Tuple[bool, str, Optional[dict]]:
+        """
+        Паритет с UI Jira: linkedIssues + rqgstatus по каждой задаче.
+        RQG_PRIMARY=comalarest (по умолчанию) | qgm
+        При пустых связях или полном провале comalarest — fallback get_qgm_status.
+        """
+        primary = os.getenv("RQG_PRIMARY", "comalarest").strip().lower()
+        if primary == "qgm":
+            return self.get_qgm_status(release_key)
+
+        safe = (release_key or "").strip().upper()
+        linked = self.get_linked_issue_keys_consists_of(safe)
+        if not linked:
+            self.logger.info(
+                "RQG: linkedIssues пусто для %s, fallback /rest/release/1/qgm", safe
+            )
+            return self.get_qgm_status(release_key)
+
+        per_issue: Dict[str, Any] = {}
+        for lk in linked:
+            raw = self.get_rqgstatus_comalarest(safe, lk, is_full_info=True)
+            if raw is not None:
+                per_issue[lk] = raw
+
+        if not per_issue:
+            self.logger.warning(
+                "RQG: все вызовы comalarest/rqgstatus пусты для %s, fallback qgm", safe
+            )
+            return self.get_qgm_status(release_key)
+
+        merged_b1 = merged_b2 = merged_b3 = False
+        first_block_to_comment = ""
+        for lk, raw in per_issue.items():
+            ri = raw.get("rqgInfo") if isinstance(raw.get("rqgInfo"), dict) else {}
+            b1 = bool(ri.get("hasBlockDataRqg1"))
+            b2 = bool(ri.get("hasBlockDataRqg2"))
+            b3 = bool(ri.get("hasBlockDataRqg3"))
+            merged_b1 |= b1
+            merged_b2 |= b2
+            merged_b3 |= b3
+            if (b1 or b2 or b3) and not first_block_to_comment:
+                first_block_to_comment = str(raw.get("toComment") or "")
+
+        first_key = next(iter(per_issue))
+        first_raw = per_issue[first_key]
+        first_ri = (
+            first_raw.get("rqgInfo")
+            if isinstance(first_raw.get("rqgInfo"), dict)
+            else {}
+        )
+        merged_info = dict(first_ri)
+        merged_info["hasBlockDataRqg1"] = merged_b1
+        merged_info["hasBlockDataRqg2"] = merged_b2
+        merged_info["hasBlockDataRqg3"] = merged_b3
+
+        to_comment = first_block_to_comment or str(first_raw.get("toComment") or "")
+
+        payload: Dict[str, Any] = {
+            "releaseKey": safe,
+            "rqgInfo": merged_info,
+            "toComment": to_comment,
+            "perLinkedIssue": per_issue,
+            "_rqg_source": "comalarest",
+        }
+        if isinstance(first_raw.get("hasData"), bool):
+            payload["hasData"] = first_raw.get("hasData")
+        if first_raw.get("baseUrl"):
+            payload["baseUrl"] = first_raw.get("baseUrl")
+
+        return (
+            True,
+            f"RQG comalarest OK ({len(per_issue)} связанных задач)",
+            payload,
+        )
 
     def transition_issue(
         self, issue_key: str, target_status: str

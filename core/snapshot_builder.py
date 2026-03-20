@@ -94,9 +94,13 @@ def build_release_snapshot(
                     story_related[key].append(ri)
 
     field_name_map = jira_service.get_field_name_map()
-    qgm_ok, qgm_message, qgm_payload = jira_service.get_qgm_status(
-        safe_release
-    )
+    fetch_rqg = getattr(jira_service, "get_official_rqg_bundle", None)
+    if callable(fetch_rqg):
+        qgm_ok, qgm_message, qgm_payload = fetch_rqg(safe_release)
+    else:
+        qgm_ok, qgm_message, qgm_payload = jira_service.get_qgm_status(
+            safe_release
+        )
     comments = jira_service.get_issue_comments(safe_release)
     project_key = _derive_business_project(release, related_issues)
 

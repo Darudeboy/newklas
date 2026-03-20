@@ -1,5 +1,5 @@
 import os
-from typing import Dict, List, Set, Optional
+from typing import Any, Dict, List, Set, Optional
 
 
 def _split_csv(value: str, fallback: List[str]) -> List[str]:
@@ -179,17 +179,79 @@ def analyze_rqg_for_release(jira_service, release_key: str, max_depth: int = 2) 
     }
 
 
+def _kkp_distributive_lines(rqg_info: Dict[str, Any]) -> List[str]:
+    """Сообщения из блоков kkp* (как в модальном окне отклонений RQG в Jira)."""
+    lines: List[str] = []
+    if not isinstance(rqg_info, dict):
+        return lines
+    for k in sorted(rqg_info.keys()):
+        if not str(k).startswith("kkp"):
+            continue
+        v = rqg_info[k]
+        if not isinstance(v, dict):
+            continue
+        dists = v.get("distributives") or []
+        if not isinstance(dists, list):
+            continue
+        for d in dists:
+            if isinstance(d, dict):
+                msg = d.get("key") or d.get("message")
+                if msg:
+                    lines.append(f"   - [{k}] {msg}")
+            elif isinstance(d, str) and d.strip():
+                lines.append(f"   - [{k}] {d}")
+    return lines
+
+
+def format_official_rqg_payload_block(payload: Optional[Dict[str, Any]]) -> str:
+    """Текстовый блок по ответу comalarest/qgm для вкладки результатов."""
+    if not isinstance(payload, dict) or not payload:
+        return ""
+    lines: List[str] = []
+    lines.append("--- RQG (данные как у кнопки в Jira) ---")
+    src = payload.get("_rqg_source") or ("qgm" if payload.get("rqgInfo") else "")
+    if src:
+        lines.append(f"Источник API: {src}")
+    per = payload.get("perLinkedIssue")
+    if isinstance(per, dict) and per:
+        lines.append(f"Задачи по linkedIssues: {len(per)}")
+        for lk in sorted(per.keys()):
+            raw = per.get(lk) or {}
+            ri = raw.get("rqgInfo") if isinstance(raw.get("rqgInfo"), dict) else {}
+            b1 = ri.get("hasBlockDataRqg1")
+            b2 = ri.get("hasBlockDataRqg2")
+            b3 = ri.get("hasBlockDataRqg3")
+            lines.append(f"\n  {lk}")
+            lines.append(
+                f"     Блокеры: hasBlockDataRqg1={b1} hasBlockDataRqg2={b2} hasBlockDataRqg3={b3}"
+            )
+            for dl in _kkp_distributive_lines(ri):
+                lines.append(f"  {dl}")
+    else:
+        ri = payload.get("rqgInfo") if isinstance(payload.get("rqgInfo"), dict) else {}
+        for dl in _kkp_distributive_lines(ri):
+            lines.append(dl)
+    lines.append("")
+    return "\n".join(lines)
+
+
 def trigger_rqg_button(jira_service, release_key: str, button_name: Optional[str] = None) -> Dict:
-    """Проверяет RQG через qgm endpoint (источник истины)."""
+    """Проверяет RQG: по умолчанию comalarest+linkedIssues как в Jira, иначе /rest/release/1/qgm."""
     safe_release = (release_key or "").strip().upper()
-    ok, message, payload = jira_service.get_qgm_status(safe_release)
+    fetch = getattr(jira_service, "get_official_rqg_bundle", None)
+    if callable(fetch):
+        ok, message, payload = fetch(safe_release)
+        label = "RQG"
+    else:
+        ok, message, payload = jira_service.get_qgm_status(safe_release)
+        label = "QGM"
     payload_preview = ""
     if isinstance(payload, dict):
         payload_preview = str(payload)[:500]
     return {
         "success": ok,
         "release_key": safe_release,
-        "transition_name": "QGM",
+        "transition_name": label,
         "message": f"{message}{'; payload=' + payload_preview if payload_preview else ''}",
         "qgm_payload": payload or {},
     }
@@ -259,6 +321,11 @@ def run_rqg_check(
             )
             lines.append("   Анализ продолжен автоматически, но RQG endpoint вернул ошибку.")
         lines.append("")
+        block = format_official_rqg_payload_block(
+            trigger_result.get("qgm_payload") if isinstance(trigger_result.get("qgm_payload"), dict) else None
+        )
+        if block.strip():
+            lines.append(block)
 
     result = analyze_rqg_for_release(jira_service=jira_service, release_key=release_key, max_depth=max_depth)
     lines.append(format_rqg_report(result))
