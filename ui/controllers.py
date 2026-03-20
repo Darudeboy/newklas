@@ -63,6 +63,13 @@ class AppController:
         self._ui_show_info = ui_show_info
         self._ui_ask_yes_no = ui_ask_yes_no
         self._ui_set_connection = ui_set_connection
+        # Вызывать с главного потока Tk (например после фона master analyze → deploy plan)
+        self._ui_schedule_main: Optional[Callable[[Callable[[], None]], None]] = None
+        # Поля формы для чат-команд (подставляются из app.py)
+        self._form_get_release_key: Callable[[], str] = lambda: ""
+        self._form_get_fix_version: Callable[[], str] = lambda: ""
+        self._form_get_dry_run: Callable[[], bool] = lambda: False
+        self._form_get_profile: Callable[[], str] = lambda: "auto"
 
         self._init_master_analyzer()
         self.current_analysis: Optional[Dict[str, Any]] = None
@@ -100,20 +107,163 @@ class AppController:
 
     def execute_chat_command(self, text: str) -> Optional[str]:
         """
-        Команды без LLM. Возвращает текст ответа или None — тогда ответ даёт GigaChat/rule-based.
+        Команды без LLM: релиз, RQG, проверки, линки, deploy plan, workflow.
+        Возвращает текст ответа или None — тогда ответ даёт GigaChat/rule-based.
         """
         raw = (text or "").strip()
         lowered = raw.lower()
-        m = re.search(r"\b(HRPRELEASE-\d+)\b", raw, re.IGNORECASE)
-        release_key = m.group(1).upper() if m else ""
-        project_match = re.search(r"\b(HRC|HRM|NEUROUI|SFILE|SEARCHCS|NEURO|HRPDEV)\b", raw, re.IGNORECASE)
+        release_key = self._resolve_release_for_chat(raw)
+        fv = (self._form_get_fix_version() or "").strip()
+        dry = self._form_get_dry_run()
+        profile = (self._form_get_profile() or "auto").strip().lower()
+
+        project_match = re.search(
+            r"\b(HRC|HRM|NEUROUI|SFILE|SEARCHCS|NEURO|HRPDEV)\b", raw, re.IGNORECASE
+        )
         project_key = project_match.group(1).upper() if project_match else ""
 
-        if ("бизнес" in lowered and "треб" in lowered) or "bt" in lowered or "бт" in lowered:
+        # --- RQG (как кнопка RQG) ---
+        if re.search(
+            r"(?:проведи|запусти|запуск|выполни)\s+(?:rqg|рqg|ркг)\b|(?:rqg|рqg)\s+релиз",
+            lowered,
+        ) or re.search(r"\brqg\b.*релиз", lowered) or re.search(
+            r"релиз.*\brqg\b", lowered
+        ):
             if not release_key:
+                return "Укажи ключ релиза в сообщении или в поле Release key."
+            self.run_rqg_check(release_key=release_key)
+            return f"Запускаю RQG для {release_key}. Смотри вкладку «Результаты»."
+
+        # --- Опубликовать Deploy plan (после master analyze; диалог на главном потоке) ---
+        if re.search(
+            r"(?:опубликуй|создай|залей)\s+(?:в\s+confluence\s+)?(?:страницу\s+)?деплой|deploy\s*plan\s+в\s+confluence|только\s+deploy\s*plan",
+            lowered,
+        ):
+            if not self.current_analysis or not (
+                self.current_analysis.get("services") or []
+            ):
+                return (
+                    "Сначала выполни «собери деплой план» или Master analyze — "
+                    "нет сохранённого анализа сервисов."
+                )
+            self.create_deploy_plan()
+            return "Открыл подтверждение создания Deploy plan (если Confluence настроен)."
+
+        # --- Master analyze + Deploy plan (полный пайплайн) ---
+        if re.search(
+            r"собери\s+деплой|деплой[\s-]*план|deploy\s*plan|собрать\s+деплой",
+            lowered,
+        ):
+            if not release_key:
+                return "Укажи ключ релиза в сообщении или в поле Release key."
+            self.run_deploy_plan_pipeline(release_key=release_key)
+            return (
+                f"Запускаю анализ master/PR для {release_key}, затем — диалог Deploy plan в Confluence. "
+                f"Результат — во вкладке «Результаты»."
+            )
+
+        # --- Статус релиза (полная проверка гейтов = состав в snapshot + гейты + дистрибутив и т.д.) ---
+        if re.search(
+            r"статус\s+релиз|сводк\w*\s+релиз|как\s+релиз|состояни\w*\s+релиз",
+            lowered,
+        ):
+            if not release_key:
+                return "Укажи ключ релиза в сообщении или в поле Release key."
+            self.run_release_check(
+                release_key=release_key,
+                profile=profile,
+                dry_run=dry,
+                post_success_comment=False,
+            )
+            return (
+                f"Запускаю полную проверку гейтов для {release_key} (как «Проверить»). "
+                f"В отчёте: этап workflow, гейты, дистрибутив, RQG и связанное."
+            )
+
+        # --- Проверка релиза (явная формулировка) ---
+        if re.search(
+            r"(?:запусти|запуск|выполни)\s+проверк\w*\s+релиз|проверк\w*\s+гейт|проверь\s+релиз|проверь\s+гейты",
+            lowered,
+        ):
+            if not release_key:
+                return "Укажи ключ релиза в сообщении или в поле Release key."
+            self.run_release_check(
+                release_key=release_key,
+                profile=profile,
+                dry_run=dry,
+                post_success_comment=False,
+            )
+            return f"Запускаю проверку гейтов для {release_key}. Результат — во вкладке «Результаты»."
+
+        # --- Собери релиз (линки по fixVersion) ---
+        if re.search(
+            r"собери\s+релиз|линк\w*\s+задач|привяж\w*\s+задач|link\s+issues|свяж\w*\s+fix\s*version",
+            lowered,
+        ):
+            if not release_key:
+                return "Укажи ключ релиза в сообщении или в поле Release key."
+            if not fv:
+                return "Укажи fixVersion в форме — без него линковка не выполняется."
+            self.link_issues(
+                release_key=release_key, fix_version=fv, dry_run=dry
+            )
+            return f"Запускаю привязку задач fixVersion «{fv}» к {release_key}. Результат — «Результаты»."
+
+        # --- Убери лишние задачи (cleanup: снять связи, где fixVersion не совпадает) ---
+        if re.search(
+            r"убери\s+лишн|очисти\s+лишн|cleanup\s+links|убрать\s+лишн|удали\s+лишн\w*\s+связ",
+            lowered,
+        ):
+            if not release_key:
+                return "Укажи ключ релиза в сообщении или в поле Release key."
+            if not fv:
+                return "Укажи эталонный fixVersion в форме — по нему оставляем только подходящие задачи."
+            self.cleanup_issues(
+                release_key=release_key, fix_version=fv, dry_run=dry
+            )
+            return (
+                f"Запускаю очистку связей {release_key} (оставить задачи с fixVersion «{fv}»). "
+                f"Результат — «Результаты»."
+            )
+
+        # --- Следующий шаг guided cycle ---
+        if re.search(
+            r"следующ\w*\s+шаг|следующ\w*\s+этап|двигай\s+дальше|двигай\s+статус|двинь\s+релиз",
+            lowered,
+        ):
+            if not release_key:
+                return "Укажи ключ релиза в сообщении или в поле Release key."
+            self.run_next_release_step(release_key=release_key, dry_run=dry)
+            return f"Следующий шаг guided cycle для {release_key}. Смотри «Результаты»."
+
+        # --- Переход workflow, если гейты зелёные ---
+        if re.search(
+            r"выполни\s+переход|переведи\s+релиз|переход\s+workflow|готов\s+к\s+переходу",
+            lowered,
+        ):
+            if not release_key:
+                return "Укажи ключ релиза в сообщении или в поле Release key."
+            self.move_release_if_ready(release_key=release_key, dry_run=dry)
+            return f"Пробую выполнить переход по workflow для {release_key} (если гейты пройдены)."
+
+        # --- БТ/FR (как было) ---
+        if ("бизнес" in lowered and "треб" in lowered) or re.search(
+            r"\bbt\b|\bбт\b", lowered
+        ):
+            rk = re.search(
+                r"\b[A-Z][A-Z0-9_]*-\d+\b", raw, re.IGNORECASE
+            )
+            bt_release = rk.group(0).upper() if rk else release_key
+            if not bt_release:
                 return "Укажи релиз в формате HRPRELEASE-12345."
-            self.run_business_requirements(release_key=release_key, project_key=project_key or None)
-            return f"Запускаю сбор БТ/FR для {release_key}" + (f" (проект {project_key})" if project_key else "") + ". Результат появится во вкладке «Результаты»."
+            self.run_business_requirements(
+                release_key=bt_release, project_key=project_key or None
+            )
+            return (
+                f"Запускаю сбор БТ/FR для {bt_release}"
+                + (f" (проект {project_key})" if project_key else "")
+                + ". Результат — «Результаты»."
+            )
 
         return None
 
@@ -543,6 +693,77 @@ class AppController:
             except Exception as e:
                 self._append_output(f"❌ Ошибка Deploy plan: {e}")
                 self._ui_set_status("Ошибка", "#C62828")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _schedule_main(self, fn: Callable[[], None]) -> None:
+        sched = self._ui_schedule_main
+        if callable(sched):
+            sched(fn)
+        else:
+            fn()
+
+    def _resolve_release_for_chat(self, raw: str) -> str:
+        m = re.search(r"\b[A-Z][A-Z0-9_]*-\d+\b", (raw or "").strip().upper())
+        if m:
+            return m.group(0)
+        return (self._form_get_release_key() or "").strip().upper()
+
+    def run_deploy_plan_pipeline(self, *, release_key: str) -> None:
+        """
+        Master analyze по релизу, затем на главном потоке — диалог и создание Deploy plan в Confluence.
+        """
+        safe_release = (release_key or "").strip().upper()
+        if not safe_release:
+            self._ui_show_error("Ошибка", "Введите ключ релиза.")
+            return
+        if not self.master_analyzer:
+            self._ui_show_error("Ошибка", "Confluence/Master analyzer не настроен. Проверь .env.")
+            return
+        self._ui_set_status("Master → Deploy plan…", "#1565C0")
+        self._ui_set_result_text(
+            f"Анализ связанных Story/Bug и PR для {safe_release}… затем откроется подтверждение Deploy plan."
+        )
+
+        def worker():
+            try:
+                analysis = self.master_analyzer.analyze_release(safe_release)
+                self.current_analysis = analysis
+                self.state.last_snapshot = self.state.last_snapshot or {}
+                self.state.last_snapshot["master_analysis"] = analysis
+                self._ui_set_result_text(
+                    json.dumps(analysis, ensure_ascii=False, indent=2)[:20000]
+                )
+                self._ui_set_status("Готово (анализ)", "#2E7D32")
+                self.history.add(
+                    "Master analyze",
+                    {
+                        "release": safe_release,
+                        "services": len(analysis.get("services", []) or []),
+                    },
+                )
+                self.history.save_to_file(self.history_path)
+
+                def on_main() -> None:
+                    if not analysis.get("success"):
+                        self._ui_show_error(
+                            "Анализ",
+                            "Master analyze неуспешен — Deploy plan не запущен.",
+                        )
+                        return
+                    services = analysis.get("services") or []
+                    if not services:
+                        self._ui_show_error(
+                            "Нет сервисов",
+                            "Нет сервисов для Deploy plan.",
+                        )
+                        return
+                    self.create_deploy_plan()
+
+                self._schedule_main(on_main)
+            except Exception as e:
+                self._ui_set_status("Ошибка", "#C62828")
+                self._ui_set_result_text(f"Ошибка пайплайна Deploy plan: {e}")
 
         threading.Thread(target=worker, daemon=True).start()
 

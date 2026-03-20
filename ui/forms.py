@@ -100,12 +100,22 @@ class MainFormPanel(ctk.CTkFrame):
         ctk.CTkButton(ops, text="Link issues", command=self._link).pack(
             side="left", padx=6, pady=6
         )
-        ctk.CTkButton(ops, text="Cleanup links", command=self._cleanup).pack(
-            side="left", padx=6, pady=6
-        )
-        ctk.CTkButton(ops, text="Remove all links", command=self._remove_all).pack(
-            side="left", padx=6, pady=6
-        )
+        ctk.CTkButton(
+            ops,
+            text="Cleanup links",
+            command=self._cleanup,
+            fg_color="#EF6C00",
+            hover_color="#E65100",
+            text_color="#FFFFFF",
+        ).pack(side="left", padx=6, pady=6)
+        ctk.CTkButton(
+            ops,
+            text="Remove all links",
+            command=self._remove_all,
+            fg_color="#C62828",
+            hover_color="#B71C1C",
+            text_color="#FFFFFF",
+        ).pack(side="left", padx=6, pady=6)
 
         ctk.CTkButton(ops, text="Master analyze", command=self._master_analyze).pack(
             side="right", padx=6, pady=6

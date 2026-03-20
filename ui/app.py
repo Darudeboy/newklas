@@ -174,4 +174,9 @@ class ModernJiraApp(ctk.CTk):
         )
 
         self.form.controller = self.controller
+        self.controller._ui_schedule_main = lambda fn: self.after(0, fn)
+        self.controller._form_get_release_key = self.form.get_release_key
+        self.controller._form_get_fix_version = self.form.get_fix_version
+        self.controller._form_get_dry_run = self.form.is_dry_run
+        self.controller._form_get_profile = self.form.get_profile
 

@@ -61,7 +61,18 @@ class ChatPanel(ctk.CTkFrame):
         self.send_btn.pack(side="right", pady=8)
 
         self.append(
-            "Assistant готов. Запусти проверку релиза, затем спроси про гейты или напиши команду БТ.\n"
+            "Команды в чате (без GigaChat): ключ релиза — в поле Release key или в тексте.\n"
+            "• запусти RQG / проведи RQG — отчёт RQG (comalarest)\n"
+            "• запусти проверку релиза / проверь гейты — полная проверка гейтов\n"
+            "• статус релиза — то же, что «Проверить» (сводка по этапу и гейтам)\n"
+            "• собери релиз — линковка задач по fixVersion из формы\n"
+            "• убери лишние задачи — cleanup связей (эталон fixVersion в форме)\n"
+            "• собери деплой план — master analyze + диалог Deploy plan в Confluence\n"
+            "• опубликуй деплой план — только Confluence (если уже был analyze)\n"
+            "• следующий шаг / двигай дальше — guided cycle\n"
+            "• выполни переход — перевод по workflow, если гейты зелёные\n"
+            "• собери бизнес-требования для HRPRELEASE-… — БТ/FR\n\n"
+            "Свободные вопросы — в GigaChat (если включён).\n"
         )
 
     def append(self, text: str) -> None:

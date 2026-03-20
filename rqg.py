@@ -82,38 +82,47 @@ def analyze_rqg_for_release(jira_service, release_key: str, max_depth: int = 2) 
     if not release:
         return {"success": False, "message": f"Релиз {release_key} не найден"}
 
-    # Собираем вложенные задачи релиза (BFS по связям и сабтаскам).
-    discovered: Set[str] = set()
-    queue: List[tuple[str, int]] = [(release_key, 0)]
-
-    while queue:
-        issue_key, depth = queue.pop(0)
-        if issue_key in discovered or depth > max_depth:
-            continue
-        discovered.add(issue_key)
-
-        issue = jira_service.get_issue_details(issue_key)
-        if not issue:
-            continue
-
-        for subtask in issue.get("fields", {}).get("subtasks", []) or []:
-            sub_key = subtask.get("key")
-            if sub_key and sub_key not in discovered:
-                queue.append((sub_key, depth + 1))
-
-        for linked_key in _linked_issue_keys(issue):
-            if linked_key not in discovered:
-                queue.append((linked_key, depth + 1))
-
-    discovered.discard(release_key)
-
     stories: List[str] = []
-    for issue_key in sorted(discovered):
-        issue = jira_service.get_issue_details(issue_key)
-        if not issue:
-            continue
-        if _issue_type(issue).lower() == "story":
-            stories.append(issue_key)
+    gl = getattr(jira_service, "get_linked_issue_keys_consists_of", None)
+    if callable(gl):
+        for k in gl(release_key):
+            issue = jira_service.get_issue_details(k)
+            if issue and _issue_type(issue).lower() == "story":
+                stories.append(k)
+        stories = sorted(set(stories))
+
+    if not stories:
+        # Fallback: BFS по связям и сабтаскам (набор может не совпасть с кнопкой RQG в Jira).
+        discovered: Set[str] = set()
+        queue: List[tuple[str, int]] = [(release_key, 0)]
+
+        while queue:
+            issue_key, depth = queue.pop(0)
+            if issue_key in discovered or depth > max_depth:
+                continue
+            discovered.add(issue_key)
+
+            issue = jira_service.get_issue_details(issue_key)
+            if not issue:
+                continue
+
+            for subtask in issue.get("fields", {}).get("subtasks", []) or []:
+                sub_key = subtask.get("key")
+                if sub_key and sub_key not in discovered:
+                    queue.append((sub_key, depth + 1))
+
+            for linked_key in _linked_issue_keys(issue):
+                if linked_key not in discovered:
+                    queue.append((linked_key, depth + 1))
+
+        discovered.discard(release_key)
+
+        for issue_key in sorted(discovered):
+            issue = jira_service.get_issue_details(issue_key)
+            if not issue:
+                continue
+            if _issue_type(issue).lower() == "story":
+                stories.append(issue_key)
 
     story_results: List[Dict] = []
     failed = 0
@@ -179,60 +188,144 @@ def analyze_rqg_for_release(jira_service, release_key: str, max_depth: int = 2) 
     }
 
 
-def _kkp_distributive_lines(rqg_info: Dict[str, Any]) -> List[str]:
-    """Сообщения из блоков kkp* (как в модальном окне отклонений RQG в Jira)."""
-    lines: List[str] = []
+# Порядок и подписи как в модальном окне Jira «Отклонения от требований RQG»
+_KKP_ORDER: List[str] = [
+    "kkpSqg",
+    "kkpDyna",
+    "kkpMpack",
+    "kkpSonar",
+    "kkpDataReady",
+    "kkpMlv",
+    "kkpApi",
+    "kkpAiAr",
+    "kkpDataModel",
+    "kkpMqg",
+    "kkpNsi",
+]
+
+_KKP_LABELS: Dict[str, str] = {
+    "kkpSqg": "Security Quality Gate (SQG)",
+    "kkpDyna": "DYNA Quality Gate",
+    "kkpMpack": "Quality Gate доверенный M-pack",
+    "kkpSonar": "QG.CI.1 Static Code Analysis",
+    "kkpDataReady": "Data Ready Quality Gate",
+    "kkpMlv": "QG MLV",
+    "kkpApi": "API Quality Gate",
+    "kkpAiAr": "QG AI/AR",
+    "kkpDataModel": "Data Model QG",
+    "kkpMqg": "MQG",
+    "kkpNsi": "NSI QG",
+}
+
+
+def _distributive_messages_from_block(v: Any) -> List[str]:
+    if not isinstance(v, dict):
+        return []
+    dists = v.get("distributives") or []
+    if not isinstance(dists, list):
+        return []
+    out: List[str] = []
+    seen: Set[str] = set()
+    for d in dists:
+        if isinstance(d, dict):
+            msg = (d.get("key") or d.get("message") or "").strip()
+        elif isinstance(d, str):
+            msg = d.strip()
+        else:
+            msg = ""
+        if msg and msg not in seen:
+            seen.add(msg)
+            out.append(msg)
+    return out
+
+
+def _gate_sections_human(rqg_info: Dict[str, Any]) -> List[tuple[str, List[str]]]:
+    """Секции (заголовок как в Jira, список уникальных сообщений)."""
     if not isinstance(rqg_info, dict):
+        return []
+    sections: List[tuple[str, List[str]]] = []
+    used: Set[str] = set()
+    for k in _KKP_ORDER:
+        if k in used:
+            continue
+        v = rqg_info.get(k)
+        msgs = _distributive_messages_from_block(v)
+        if not msgs:
+            continue
+        label = _KKP_LABELS.get(k, k)
+        sections.append((label, msgs))
+        used.add(k)
+    for k, v in sorted(rqg_info.items()):
+        if not str(k).startswith("kkp") or k in used:
+            continue
+        msgs = _distributive_messages_from_block(v)
+        if msgs:
+            sections.append((_KKP_LABELS.get(k, k), msgs))
+            used.add(k)
+    return sections
+
+
+def _format_rqg_info_compact(ri: Dict[str, Any]) -> List[str]:
+    """Краткий текст по одной задаче (без технических флагов)."""
+    lines: List[str] = []
+    sections = _gate_sections_human(ri)
+    if not sections:
         return lines
-    for k in sorted(rqg_info.keys()):
-        if not str(k).startswith("kkp"):
-            continue
-        v = rqg_info[k]
-        if not isinstance(v, dict):
-            continue
-        dists = v.get("distributives") or []
-        if not isinstance(dists, list):
-            continue
-        for d in dists:
-            if isinstance(d, dict):
-                msg = d.get("key") or d.get("message")
-                if msg:
-                    lines.append(f"   - [{k}] {msg}")
-            elif isinstance(d, str) and d.strip():
-                lines.append(f"   - [{k}] {d}")
+
+    flat: List[str] = []
+    for _title, msgs in sections:
+        flat.extend(msgs)
+    unique_all: List[str] = []
+    seen: Set[str] = set()
+    for m in flat:
+        if m not in seen:
+            seen.add(m)
+            unique_all.append(m)
+
+    if len(unique_all) == 1:
+        lines.append("Блокирующие проверки RQG")
+        lines.append(f"  • {unique_all[0]}")
+        return lines
+
+    lines.append("Блокирующие проверки RQG")
+    for title, msgs in sections:
+        lines.append(f"  {title}")
+        for m in msgs:
+            lines.append(f"    • {m}")
     return lines
 
 
 def format_official_rqg_payload_block(payload: Optional[Dict[str, Any]]) -> str:
-    """Текстовый блок по ответу comalarest/qgm для вкладки результатов."""
+    """Краткий блок по ответу comalarest/qgm — как модалка Jira, без лишней техники."""
     if not isinstance(payload, dict) or not payload:
         return ""
     lines: List[str] = []
-    lines.append("--- RQG (данные как у кнопки в Jira) ---")
-    src = payload.get("_rqg_source") or ("qgm" if payload.get("rqgInfo") else "")
-    if src:
-        lines.append(f"Источник API: {src}")
+    lines.append("Отклонения от требований релизных Quality Gates")
+    lines.append("")
+
     per = payload.get("perLinkedIssue")
+    wrote = False
     if isinstance(per, dict) and per:
-        lines.append(f"Задачи по linkedIssues: {len(per)}")
         for lk in sorted(per.keys()):
             raw = per.get(lk) or {}
             ri = raw.get("rqgInfo") if isinstance(raw.get("rqgInfo"), dict) else {}
-            b1 = ri.get("hasBlockDataRqg1")
-            b2 = ri.get("hasBlockDataRqg2")
-            b3 = ri.get("hasBlockDataRqg3")
-            lines.append(f"\n  {lk}")
-            lines.append(
-                f"     Блокеры: hasBlockDataRqg1={b1} hasBlockDataRqg2={b2} hasBlockDataRqg3={b3}"
-            )
-            for dl in _kkp_distributive_lines(ri):
-                lines.append(f"  {dl}")
-    else:
+            body = _format_rqg_info_compact(ri)
+            if not body:
+                continue
+            wrote = True
+            lines.append(lk)
+            lines.extend(body)
+            lines.append("")
+    if not wrote:
         ri = payload.get("rqgInfo") if isinstance(payload.get("rqgInfo"), dict) else {}
-        for dl in _kkp_distributive_lines(ri):
-            lines.append(dl)
-    lines.append("")
-    return "\n".join(lines)
+        body = _format_rqg_info_compact(ri)
+        if body:
+            lines.extend(body)
+            lines.append("")
+        else:
+            return ""
+
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def trigger_rqg_button(jira_service, release_key: str, button_name: Optional[str] = None) -> Dict:
@@ -245,14 +338,11 @@ def trigger_rqg_button(jira_service, release_key: str, button_name: Optional[str
     else:
         ok, message, payload = jira_service.get_qgm_status(safe_release)
         label = "QGM"
-    payload_preview = ""
-    if isinstance(payload, dict):
-        payload_preview = str(payload)[:500]
     return {
         "success": ok,
         "release_key": safe_release,
         "transition_name": label,
-        "message": f"{message}{'; payload=' + payload_preview if payload_preview else ''}",
+        "message": message,
         "qgm_payload": payload or {},
     }
 
@@ -271,7 +361,10 @@ def format_rqg_report(result: Dict) -> str:
     lines.append("")
 
     if result["total_stories"] == 0:
-        lines.append("⚠️ В релизе не найдено Story для RQG-проверки.")
+        lines.append(
+            "⚠️ Story для эвристики ЦО/ИФТ/дистрибутив не найдены "
+            "(проверь связи «consists of» / обход графа). Официальный RQG — в блоке выше."
+        )
         return "\n".join(lines)
 
     for story in result["story_results"]:
@@ -311,8 +404,7 @@ def run_rqg_check(
         trigger_result = trigger_rqg_button(jira_service, release_key, button_name=button_name)
         if trigger_result["success"]:
             lines.append(
-                f"✅ RQG endpoint выполнен: {trigger_result['transition_name']} "
-                f"({trigger_result['release_key']})"
+                f"✅ Данные RQG получены: {trigger_result['release_key']}"
             )
         else:
             lines.append(
