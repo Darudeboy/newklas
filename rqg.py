@@ -1,6 +1,8 @@
 import os
 from typing import Any, Dict, List, Set, Optional
 
+from core.types import is_jira_story_issue_type
+
 
 def _split_csv(value: str, fallback: List[str]) -> List[str]:
     raw = (value or "").strip()
@@ -87,7 +89,7 @@ def analyze_rqg_for_release(jira_service, release_key: str, max_depth: int = 2) 
     if callable(gl):
         for k in gl(release_key):
             issue = jira_service.get_issue_details(k)
-            if issue and _issue_type(issue).lower() == "story":
+            if issue and is_jira_story_issue_type(_issue_type(issue)):
                 stories.append(k)
         stories = sorted(set(stories))
 
@@ -121,7 +123,7 @@ def analyze_rqg_for_release(jira_service, release_key: str, max_depth: int = 2) 
             issue = jira_service.get_issue_details(issue_key)
             if not issue:
                 continue
-            if _issue_type(issue).lower() == "story":
+            if is_jira_story_issue_type(_issue_type(issue)):
                 stories.append(issue_key)
 
     story_results: List[Dict] = []

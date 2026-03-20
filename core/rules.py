@@ -8,6 +8,8 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
+from core.types import is_jira_story_issue_type
+
 
 def _norm(value: str) -> str:
     return (value or "").strip().lower()
@@ -907,7 +909,7 @@ def evaluate_gates(
     for issue in related_issues:
         key = issue.get("key", "")
         issue_type = _extract_issue_type(issue).lower()
-        if issue_type == "story":
+        if is_jira_story_issue_type(_extract_issue_type(issue)):
             story_results.append(
                 _evaluate_story(
                     key,

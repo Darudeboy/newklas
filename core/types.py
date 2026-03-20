@@ -3,7 +3,22 @@ Dataclass-модели для нормализованного release snapshot 
 Сохранена совместимость с текущим форматом dict, возвращаемым evaluate_release_gates.
 """
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional
+
+# Jira REST возвращает issuetype.name на языке инстанса (напр. «История» вместо Story).
+JIRA_STORY_TYPE_ALIASES: FrozenSet[str] = frozenset(
+    {
+        "story",
+        "история",
+        "user story",
+    }
+)
+
+
+def is_jira_story_issue_type(name: Optional[str]) -> bool:
+    """True, если тип задачи — Story (EN/RU и распространённые варианты)."""
+    n = (name or "").strip().lower()
+    return n in JIRA_STORY_TYPE_ALIASES
 
 
 @dataclass

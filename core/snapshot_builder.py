@@ -5,6 +5,8 @@
 import logging
 from typing import Any, Dict, List, Optional
 
+from core.types import is_jira_story_issue_type
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,7 +33,10 @@ def _derive_business_project(
 ) -> str:
     for issue in related_issues:
         issue_type = _extract_issue_type(issue).lower()
-        if issue_type in ("story", "bug", "история", "дефект"):
+        if is_jira_story_issue_type(_extract_issue_type(issue)) or issue_type in (
+            "bug",
+            "дефект",
+        ):
             project_key = (
                 str(issue.get("fields", {}).get("project", {}).get("key", ""))
                 .strip()
@@ -84,8 +89,7 @@ def build_release_snapshot(
         if not issue:
             continue
         related_issues.append(issue)
-        issue_type = _extract_issue_type(issue).lower()
-        if issue_type == "story":
+        if is_jira_story_issue_type(_extract_issue_type(issue)):
             rel_keys = _get_linked_issue_keys(issue)
             story_related[key] = []
             for rk in rel_keys:
