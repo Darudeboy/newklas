@@ -937,7 +937,18 @@ def evaluate_gates(
             "stories_failed": len([x for x in story_results if not x.get("ok")]),
         },
     }
-    (auto_passed if story_gate["ok"] else auto_failed).append(story_gate)
+    # Story quality currently uses heuristic parsing and in many projects BT/FR
+    # approval is stored directly in Story custom fields (RLINK/Confluence),
+    # so this check is индикативная and must not block workflow transitions.
+    if story_gate["ok"]:
+        auto_passed.append(story_gate)
+    else:
+        auto_warnings.append(
+            {
+                **story_gate,
+                "title": "Качество Story (индикативно, не блокирует)",
+            }
+        )
 
     bugs_ok = all(item.get("ok") for item in bug_results) if bug_results else True
     if not bugs_ok:
