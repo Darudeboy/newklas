@@ -683,7 +683,7 @@ class AppController:
             self._ui_show_error("Ошибка", "Введите ключ релиза.")
             return
 
-        if not dry:
+        if not dry_run:
             ok = self._ui_ask_yes_no(
                 "Принудительный перевод",
                 "Выполнить ПРИНУДИТЕЛЬНЫЙ перевод релиза на следующий этап workflow?\n\n"
@@ -705,7 +705,7 @@ class AppController:
                     )
                     return
 
-                if dry:
+                if dry_run:
                     self._ui_set_result_text(
                         f"[DRY-RUN] Принудительный перевод {safe_release} в статус «{next_status}» "
                         f"(блокеры игнорируются)."
