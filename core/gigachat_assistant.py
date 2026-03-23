@@ -30,13 +30,14 @@ COMMAND_INTENT_SYSTEM_PROMPT = """Ты интерпретатор команд �
    - cleanup_issues
    - next_release_step
    - move_release_if_ready
+   - force_move_release
    - business_requirements
    - none
 4) confidence: число от 0.0 до 1.0.
 5) Если сообщение не является командой из allowlist, верни intent="none", confidence=0.0.
 
 Команды, которые меняют состояние:
-- link_issues, cleanup_issues, move_release_if_ready, create_deploy_plan, deploy_plan_pipeline, business_requirements
+- link_issues, cleanup_issues, move_release_if_ready, force_move_release, create_deploy_plan, deploy_plan_pipeline, business_requirements
 Верни их intent независимо от подтверждения; подтверждение сделает приложение.
 """
 

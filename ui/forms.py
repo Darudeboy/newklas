@@ -78,6 +78,14 @@ class MainFormPanel(ctk.CTkFrame):
             text="Выполнить переход (если готов)",
             command=self._move_if_ready,
         ).pack(side="left", padx=6, pady=8)
+        ctk.CTkButton(
+            buttons,
+            text="Принудительный перевод",
+            command=self._force_move,
+            fg_color="#B71C1C",
+            hover_color="#8E0000",
+            text_color="#FFFFFF",
+        ).pack(side="left", padx=6, pady=8)
 
         ctk.CTkButton(buttons, text="LT", width=60, command=self._lt).pack(
             side="right", padx=6, pady=8
@@ -172,6 +180,12 @@ class MainFormPanel(ctk.CTkFrame):
 
     def _move_if_ready(self) -> None:
         self.controller.move_release_if_ready(
+            release_key=self.get_release_key(),
+            dry_run=self.is_dry_run(),
+        )
+
+    def _force_move(self) -> None:
+        self.controller.force_move_release_transition(
             release_key=self.get_release_key(),
             dry_run=self.is_dry_run(),
         )

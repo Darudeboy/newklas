@@ -253,6 +253,19 @@ class AppController:
             self.move_release_if_ready(release_key=release_key, dry_run=dry)
             return f"Пробую выполнить переход по workflow для {release_key} (если гейты пройдены)."
 
+        # --- Принудительный переход workflow (игнор блокеров) ---
+        if re.search(
+            r"принуд\w*\s+переход|форс\w*\s+переход|force\s+transition|игнор\w*\s+блокер",
+            lowered,
+        ):
+            if not release_key:
+                return "Укажи ключ релиза в сообщении или в поле Release key."
+            self.force_move_release_transition(release_key=release_key, dry_run=dry)
+            return (
+                f"Запускаю принудительный перевод {release_key} на следующий этап workflow "
+                f"(без проверки блокеров)."
+            )
+
         # --- БТ/FR (как было) ---
         if ("бизнес" in lowered and "треб" in lowered) or re.search(
             r"\bbt\b|\bбт\b", lowered
@@ -342,6 +355,7 @@ class AppController:
                 "cleanup_issues": "cleanup_issues",
                 "next_release_step": "next_release_step",
                 "move_release_if_ready": "move_release_if_ready",
+                "force_move_release": "force_move_release",
                 "business_requirements": "business_requirements",
                 "none": "none",
             }
@@ -446,6 +460,15 @@ class AppController:
                         return "Отменено."
                 self.move_release_if_ready(release_key=release_key, dry_run=dry)
                 return f"Пробую выполнить переход по workflow для {release_key}."
+
+            if intent == "force_move_release":
+                if not release_key:
+                    return "Укажи ключ релиза в сообщении или в поле Release key."
+                self.force_move_release_transition(release_key=release_key, dry_run=dry)
+                return (
+                    f"Запускаю принудительный перевод {release_key} на следующий этап workflow "
+                    f"(без проверки блокеров)."
+                )
 
             if intent == "business_requirements":
                 if not release_key:
@@ -647,6 +670,65 @@ class AppController:
                 )
             except Exception as e:
                 self._ui_set_result_text(f"Ошибка перехода: {e}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def force_move_release_transition(self, *, release_key: str, dry_run: bool = False) -> None:
+        """
+        Принудительный перевод релиза в следующий статус workflow.
+        Игнорирует ready_for_transition и блокеры гейтов.
+        """
+        safe_release = (release_key or "").strip().upper()
+        if not safe_release:
+            self._ui_show_error("Ошибка", "Введите ключ релиза.")
+            return
+
+        if not dry:
+            ok = self._ui_ask_yes_no(
+                "Принудительный перевод",
+                "Выполнить ПРИНУДИТЕЛЬНЫЙ перевод релиза на следующий этап workflow?\n\n"
+                f"Релиз: {safe_release}\n"
+                "Блокеры и непройденные гейты будут проигнорированы.\n"
+                "Действие может нарушить стандартный процесс.",
+            )
+            if not ok:
+                return
+
+        def worker():
+            try:
+                # Нужен актуальный next workflow status, но без требования ready_for_transition.
+                result = run_release_check(self.jira_service, safe_release, "auto")
+                next_status = (result.get("next_allowed_transition") or "").strip()
+                if not next_status:
+                    self._ui_set_result_text(
+                        "Принудительный переход невозможен: следующий этап workflow не определён."
+                    )
+                    return
+
+                if dry:
+                    self._ui_set_result_text(
+                        f"[DRY-RUN] Принудительный перевод {safe_release} в статус «{next_status}» "
+                        f"(блокеры игнорируются)."
+                    )
+                    return
+
+                ok, msg = self.jira_service.transition_issue_to_status(
+                    safe_release, next_status
+                )
+                if not ok:
+                    self._ui_set_result_text(f"Не удалось выполнить принудительный перевод: {msg}")
+                    return
+
+                self.history.add(
+                    "Forced transition",
+                    {"release": safe_release, "target_status": next_status},
+                )
+                self.history.save_to_file(self.history_path)
+                self._ui_show_info("Принудительный перевод", msg)
+                # Обновим контекст после перехода.
+                self.start_release_guided_cycle(release_key=safe_release, profile="auto", dry_run=False)
+            except Exception as e:
+                self._ui_set_result_text(f"Ошибка принудительного перехода: {e}")
 
         threading.Thread(target=worker, daemon=True).start()
 
