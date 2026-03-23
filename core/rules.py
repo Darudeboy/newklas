@@ -1115,7 +1115,17 @@ def evaluate_gates(
         "ok": dt_recommendation_ok,
         "details": {"recommended": dt_recommendation_ok},
     }
-    (auto_passed if dt_gate["ok"] else auto_failed).append(dt_gate)
+    # Рекомендация ДТ индикативная и не должна блокировать переходы.
+    if dt_gate["ok"]:
+        auto_passed.append(dt_gate)
+    else:
+        # В отчёте это попадёт в раздел «ВНИМАНИЕ (не блокируют переход)».
+        auto_warnings.append(
+            {
+                **dt_gate,
+                "title": "Рекомендация ДТ (индикативно, не блокирует)",
+            }
+        )
 
     enforce_qgm = _norm(os.getenv("RELEASE_FLOW_ENFORCE_QGM", "false")) in {
         "1",
