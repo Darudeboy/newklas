@@ -136,6 +136,141 @@ class ConfluenceDeployPlanGenerator:
             logger.warning("Не удалось загрузить template_page_id=%s: %s", self.template_page_id, e)
             return None, None
 
+    def generate_deploy_plan(
+        self,
+        analysis_result: Dict[str, Any],
+        space_key: str,
+        parent_page_title: str,
+        team_name: str,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """
+        Создаёт или обновляет страницу Deploy plan в Confluence.
+
+        Методу необходимо быть внутри ConfluenceDeployPlanGenerator.
+        """
+        try:
+            cf = self._client()
+        except Exception as e:
+            return {"success": False, "message": str(e), "details": ""}
+
+        rk = (analysis_result.get("release_key") or "").strip().upper()
+        summary = html.escape(str(analysis_result.get("release_summary") or "N/A"))
+        services: List[str] = list(analysis_result.get("services") or [])
+        team = html.escape(str(team_name or ""))
+        space = (space_key or "").strip()
+
+        if not rk:
+            return {"success": False, "message": "Нет release_key в analysis_result", "details": ""}
+        if not space:
+            return {"success": False, "message": "Не указан space_key", "details": ""}
+
+        page_title = f"[{rk}] Deploy plan"
+
+        rows: List[str] = []
+        for i, svc in enumerate(services, 1):
+            s = html.escape(str(svc))
+            rows.append(f"<tr><td>{i}</td><td>{s}</td></tr>")
+        table = (
+            "<table><thead><tr><th>#</th><th>Сервис / репозиторий</th></tr></thead>"
+            f"<tbody>{''.join(rows) if rows else '<tr><td colspan=\"2\">Нет сервисов</td></tr>'}</tbody></table>"
+        )
+
+        release_header_html = f"""
+<h1>Deploy plan: {html.escape(rk)}</h1>
+<p><strong>Релиз:</strong> {html.escape(rk)}<br/>
+<strong>Название:</strong> {summary}<br/>
+<strong>Команда:</strong> {team}</p>
+""".strip()
+
+        services_section_html = f"""
+<h2>Сервисы (влитые в master)</h2>
+{table}
+<p><em>Сгенерировано инструментом Blast.</em></p>
+""".strip()
+
+        # Preserve Confluence template structure by merging into template storage when possible.
+        body = ""
+        tpl_storage, _tpl_labels = self._get_template_storage_and_labels()
+        if isinstance(tpl_storage, str) and tpl_storage:
+            merged = merge_deploy_plan_into_template_storage(
+                tpl_storage,
+                release_header_html=release_header_html,
+                services_section_html=services_section_html,
+            )
+            if isinstance(merged, str) and merged.strip():
+                body = merged
+
+        # Fallback: generate full body.
+        if not body:
+            body = (release_header_html + "\n" + services_section_html).strip()
+
+        parent_id: Optional[str] = None
+        if parent_page_title:
+            try:
+                parent = cf.get_page_by_title(space, parent_page_title)
+                if parent and isinstance(parent, dict):
+                    parent_id = str(parent.get("id", "")) or None
+            except Exception as e:
+                logger.warning(
+                    "Не найдена родительская страница %s: %s", parent_page_title, e
+                )
+
+        try:
+            existing = cf.get_page_by_title(
+                space, page_title, expand="body.storage"
+            )
+            if existing and isinstance(existing, dict):
+                pid = existing["id"]
+                cf.update_page(
+                    pid,
+                    page_title,
+                    body,
+                    representation="storage",
+                    minor_edit=False,
+                )
+                page_url = f"{self.confluence_url}/pages/viewpage.action?pageId={pid}"
+                return {
+                    "success": True,
+                    "page_url": page_url,
+                    "page_title": page_title,
+                    "message": "Страница обновлена",
+                }
+
+            create_kw: Dict[str, Any] = {
+                "space": space,
+                "title": page_title,
+                "body": body,
+                "representation": "storage",
+            }
+            if parent_id:
+                create_kw["parent_id"] = parent_id
+
+            new_page = cf.create_page(**create_kw)
+            if not new_page or not isinstance(new_page, dict):
+                return {
+                    "success": False,
+                    "message": "Confluence не вернул данные страницы",
+                    "details": "",
+                }
+            pid = new_page.get("id")
+            page_url = f"{self.confluence_url}/pages/viewpage.action?pageId={pid}"
+            return {
+                "success": True,
+                "page_url": page_url,
+                "page_title": page_title,
+                "message": "Страница создана",
+            }
+        except Exception as e:
+            logger.exception("Confluence deploy plan: %s", e)
+            return {
+                "success": False,
+                "message": str(e),
+                "details": getattr(e, "response", b"")[:500]
+                if hasattr(e, "response")
+                else "",
+            }
+
 
 def replace_section_by_anchor(
     storage: str,
@@ -200,137 +335,6 @@ def merge_deploy_plan_into_template_storage(
         return None
 
     return services_tmp
-
-    def generate_deploy_plan(
-        self,
-        analysis_result: Dict[str, Any],
-        space_key: str,
-        parent_page_title: str,
-        team_name: str,
-        **kwargs: Any,
-    ) -> Dict[str, Any]:
-        """
-        Создаёт или обновляет страницу Deploy plan.
-        """
-        try:
-            cf = self._client()
-        except Exception as e:
-            return {"success": False, "message": str(e), "details": ""}
-
-        rk = (analysis_result.get("release_key") or "").strip().upper()
-        summary = html.escape(
-            str(analysis_result.get("release_summary") or "N/A")
-        )
-        services: List[str] = list(analysis_result.get("services") or [])
-        team = html.escape(str(team_name or ""))
-        space = (space_key or "").strip()
-
-        if not rk:
-            return {"success": False, "message": "Нет release_key в analysis_result", "details": ""}
-        if not space:
-            return {"success": False, "message": "Не указан space_key", "details": ""}
-
-        page_title = f"[{rk}] Deploy plan"
-
-        rows: List[str] = []
-        for i, svc in enumerate(services, 1):
-            s = html.escape(str(svc))
-            rows.append(f"<tr><td>{i}</td><td>{s}</td></tr>")
-        table = (
-            "<table><thead><tr><th>#</th><th>Сервис / репозиторий</th></tr></thead>"
-            f"<tbody>{''.join(rows) if rows else '<tr><td colspan=\"2\">Нет сервисов</td></tr>'}</tbody></table>"
-        )
-
-        release_header_html = f"""
-<h1>Deploy plan: {html.escape(rk)}</h1>
-<p><strong>Релиз:</strong> {html.escape(rk)}<br/>
-<strong>Название:</strong> {summary}<br/>
-<strong>Команда:</strong> {team}</p>
-""".strip()
-
-        services_section_html = f"""
-<h2>Сервисы (влитые в master)</h2>
-{table}
-<p><em>Сгенерировано инструментом Blast.</em></p>
-""".strip()
-
-        # Try to preserve the Confluence template structure (labels/macros/wrappers).
-        body = ""
-        tpl_storage, tpl_labels = self._get_template_storage_and_labels()
-        if isinstance(tpl_storage, str) and tpl_storage:
-            merged = merge_deploy_plan_into_template_storage(
-                tpl_storage,
-                release_header_html=release_header_html,
-                services_section_html=services_section_html,
-            )
-            if isinstance(merged, str) and merged.strip():
-                body = merged
-
-        # Fallback: current “generate full body” approach.
-        if not body:
-            body = (release_header_html + "\n" + services_section_html).strip()
-
-        parent_id: Optional[str] = None
-        if parent_page_title:
-            try:
-                parent = cf.get_page_by_title(space, parent_page_title)
-                if parent and isinstance(parent, dict):
-                    parent_id = str(parent.get("id", "")) or None
-            except Exception as e:
-                logger.warning("Не найдена родительская страница %s: %s", parent_page_title, e)
-
-        try:
-            existing = cf.get_page_by_title(space, page_title, expand="body.storage")
-            if existing and isinstance(existing, dict):
-                pid = existing["id"]
-                cf.update_page(
-                    pid,
-                    page_title,
-                    body,
-                    representation="storage",
-                    minor_edit=False,
-                )
-                page_url = f"{self.confluence_url}/pages/viewpage.action?pageId={pid}"
-                return {
-                    "success": True,
-                    "page_url": page_url,
-                    "page_title": page_title,
-                    "message": "Страница обновлена",
-                }
-
-            create_kw: Dict[str, Any] = {
-                "space": space,
-                "title": page_title,
-                "body": body,
-                "representation": "storage",
-            }
-            # Best-effort: if API supports labels argument, preserve template labels.
-            if tpl_labels:
-                create_kw["labels"] = tpl_labels
-            if parent_id:
-                create_kw["parent_id"] = parent_id
-            new_page = cf.create_page(**create_kw)
-            if not new_page or not isinstance(new_page, dict):
-                return {
-                    "success": False,
-                    "message": "Confluence не вернул данные страницы",
-                    "details": "",
-                }
-            pid = new_page.get("id")
-            page_url = f"{self.confluence_url}/pages/viewpage.action?pageId={pid}"
-            return {
-                "success": True,
-                "page_url": page_url,
-                "page_title": page_title,
-                "message": "Страница создана",
-            }
-        except Exception as e:
-            logger.exception("Confluence deploy plan: %s", e)
-            return {
-                "success": False,
-                "message": str(e),
-                "details": getattr(e, "response", b"")[:500] if hasattr(e, "response") else "",
-            }
 
 
 class MasterServicesAnalyzer:
