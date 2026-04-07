@@ -3,9 +3,10 @@
 Все сетевые вызовы к Jira выполняются здесь; rules работают только с snapshot.
 """
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from core.types import is_jira_story_issue_type
+from core.confluence_client import ConfluenceClient
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ def _derive_business_project(
 def build_release_snapshot(
     jira_service: Any,
     release_key: str,
+    confluence_client: Optional[ConfluenceClient] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Собирает все данные, нужные для оценки гейтов, в один снимок (dict).
@@ -108,6 +110,49 @@ def build_release_snapshot(
     comments = jira_service.get_issue_comments(safe_release)
     project_key = _derive_business_project(release, related_issues)
 
+    # Approve-job-like inputs: remote links (remotelink) and Confluence artifacts behind them.
+    release_remote_links: List[dict] = []
+    try:
+        release_remote_links = jira_service.get_issue_remote_links(safe_release)
+    except Exception:
+        release_remote_links = []
+
+    confluence_pages: Dict[str, Dict[str, Any]] = {}
+    confluence_page_ids: List[str] = []
+    if confluence_client and release_remote_links:
+        seen: Set[str] = set()
+        for item in release_remote_links:
+            obj = item.get("object", {}) or {}
+            url = str(obj.get("url", "") or "")
+            pid = confluence_client.extract_page_id(url)
+            if not pid or pid in seen:
+                continue
+            seen.add(pid)
+            confluence_page_ids.append(pid)
+
+        for pid in confluence_page_ids:
+            payload = confluence_client.get_content_by_id_expanded(pid)
+            if not payload:
+                confluence_pages[pid] = {"ok": False, "page_id": pid}
+                continue
+            labels = confluence_client.normalize_labels_from_content(payload)
+            attachments = confluence_client.normalize_attachments_from_content(payload)
+            comala_status = confluence_client.get_comala_status(pid)
+            comala_activity = confluence_client.export_comala_workflow_activity(pid)
+            confluence_pages[pid] = {
+                "ok": True,
+                "page_id": pid,
+                "title": payload.get("title"),
+                "labels": labels,
+                "attachments": attachments,
+                "version": (payload.get("version") or {}).get("number")
+                if isinstance(payload.get("version"), dict)
+                else None,
+                "comala_status": comala_status,
+                # Не парсим активити здесь (может быть CSV/HTML) — просто сохраняем сырьё.
+                "comala_activity": comala_activity,
+            }
+
     return {
         "release_key": safe_release,
         "release_issue": release,
@@ -120,4 +165,7 @@ def build_release_snapshot(
         "qgm_payload": qgm_payload or {},
         "comments": comments,
         "project_key": project_key,
+        "release_remote_links": release_remote_links,
+        "confluence_page_ids": confluence_page_ids,
+        "confluence_pages": confluence_pages,
     }

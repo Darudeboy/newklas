@@ -4,8 +4,10 @@ run_release_check: сбор snapshot → rules → учёт manual_confirmations
 run_release_action: переход в целевой статус workflow (to.name) или по id/имени кнопки.
 """
 import logging
+import os
 from typing import Any, Dict, Optional, Tuple
 
+from core.confluence_client import ConfluenceClient
 from core.snapshot_builder import build_release_snapshot
 from core.rules import evaluate_gates
 from core.release_flow_config import get_release_flow_profile
@@ -72,7 +74,18 @@ def run_release_check(
     if not safe_release:
         return {"success": False, "message": "Не указан release_key."}
 
-    snapshot = build_release_snapshot(jira_service, safe_release)
+    # Best-effort: enrich snapshot with Confluence checks similar to approve-job (if token configured).
+    cf_token = (os.getenv("CONFLUENCE_TOKEN") or "").strip()
+    cf_url = (os.getenv("CONFLUENCE_URL") or "").strip()
+    confluence_client = (
+        ConfluenceClient(url=cf_url, token=cf_token, verify_ssl=False)
+        if cf_url and cf_token
+        else None
+    )
+
+    snapshot = build_release_snapshot(
+        jira_service, safe_release, confluence_client=confluence_client
+    )
     if not snapshot:
         return {"success": False, "message": f"Релиз {safe_release} не найден."}
 
