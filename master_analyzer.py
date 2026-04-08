@@ -191,7 +191,7 @@ class ConfluenceDeployPlanGenerator:
 
         # Preserve Confluence template structure by merging into template storage when possible.
         body = ""
-        tpl_storage, _tpl_labels = self._get_template_storage_and_labels()
+        tpl_storage, tpl_labels = self._get_template_storage_and_labels()
         if isinstance(tpl_storage, str) and tpl_storage:
             merged = merge_deploy_plan_into_template_storage(
                 tpl_storage,
@@ -243,6 +243,9 @@ class ConfluenceDeployPlanGenerator:
                 "body": body,
                 "representation": "storage",
             }
+            # Best-effort: preserve labels from template when API supports it.
+            if tpl_labels:
+                create_kw["labels"] = tpl_labels
             if parent_id:
                 create_kw["parent_id"] = parent_id
 
@@ -313,26 +316,86 @@ def merge_deploy_plan_into_template_storage(
     if not template_storage:
         return None
 
-    # 1) Release header: h1 + следующий <p>...</p>
-    header_re = re.compile(
-        r"<h1>\s*deploy\s*plan\s*:.*?</h1>\s*<p>.*?</p>",
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-    tmp, n1 = header_re.subn(release_header_html, template_storage, count=1)
-    if n1 < 1:
-        return None
+    def _insert_near_top(storage: str, snippet: str) -> str:
+        # Try to insert right after the first opening container tag to keep template wrappers.
+        m = re.search(r"<(div|body|section)\b[^>]*>", storage, flags=re.IGNORECASE)
+        if m:
+            i = m.end()
+            return storage[:i] + "\n" + snippet + "\n" + storage[i:]
+        return snippet + "\n" + storage
 
-    # 2) Services section: h2.. до note с "Сгенерировано инструментом Blast."
-    services_re = re.compile(
-        r"<h2>\s*сервисы\s*\(влитые\s*в\s*master\)\s*</h2>.*?"
-        r"<p>\s*<em>\s*сгенерировано\s+инструментом\s+blast\.\s*</em>\s*</p>",
-        flags=re.DOTALL | re.IGNORECASE,
+    def _replace_or_insert_block_by_heading(
+        storage: str,
+        *,
+        heading_re: re.Pattern[str],
+        block_end_re: re.Pattern[str],
+        new_block: str,
+        insert_after_re: Optional[re.Pattern[str]] = None,
+    ) -> tuple[str, bool]:
+        """
+        Replace a block starting at heading_re until block_end_re.
+        If not found, insert new_block either after insert_after_re (if provided) or near top.
+        """
+        m = heading_re.search(storage)
+        if not m:
+            if insert_after_re:
+                anchor = insert_after_re.search(storage)
+                if anchor:
+                    i = anchor.end()
+                    return storage[:i] + "\n" + new_block + "\n" + storage[i:], False
+            return _insert_near_top(storage, new_block), False
+
+        start = m.start()
+        after_heading = m.end()
+        end_m = block_end_re.search(storage, pos=after_heading)
+        end = end_m.start() if end_m else len(storage)
+        return storage[:start] + new_block + "\n" + storage[end:], True
+
+    # Replace header: find h1 containing "deploy plan" (case-insensitive),
+    # and replace just this <h1> element (do not wipe template macros between blocks).
+    header_heading_re = re.compile(
+        r"<h1\b[^>]*>[\s\S]*?deploy\s*plan[\s\S]*?</h1>",
+        flags=re.IGNORECASE,
     )
-    services_tmp, n2 = services_re.subn(
-        services_section_html, tmp, count=1
+    # End boundary right after the matched h1 (we replace only the h1 node).
+    end_after_h1_re = re.compile(r"", flags=re.IGNORECASE)
+    # Special-case: _replace_or_insert_block_by_heading needs a "next boundary" search.
+    # We'll use a boundary that matches the end of the matched h1 by searching from after_heading
+    # for the first element boundary; then we slice starting at m.start() and end at m.end().
+    # To keep the helper simple, do header replacement inline.
+    m_h1 = header_heading_re.search(template_storage)
+    if m_h1:
+        tmp = (
+            template_storage[: m_h1.start()]
+            + release_header_html
+            + "\n"
+            + template_storage[m_h1.end() :]
+        )
+    else:
+        tmp = _insert_near_top(template_storage, release_header_html)
+
+    # Replace services: find h2 containing "Сервисы" and replace until next h2 (or end).
+    # If missing, insert right after the header block if possible; otherwise near top.
+    services_heading_re = re.compile(
+        r"<h2\b[^>]*>[\s\S]*?сервисы[\s\S]*?</h2>",
+        flags=re.IGNORECASE,
     )
-    if n2 < 1:
-        return None
+    # Services end boundary: next section heading, next macro, or container close.
+    services_block_end_re = re.compile(
+        r"(?i)(<h2\b|<ac:structured-macro\b|</div>|</section>|</body>)"
+    )
+    # Insert services after the (possibly replaced) header, best-effort.
+    insert_after_header_re = re.compile(
+        r"<h1\b[^>]*>[\s\S]*?deploy\s*plan[\s\S]*?</h1>",
+        flags=re.IGNORECASE,
+    )
+    services_tmp, _services_replaced = _replace_or_insert_block_by_heading(
+        tmp,
+        heading_re=services_heading_re,
+        block_end_re=services_block_end_re,
+        new_block=services_section_html,
+        insert_after_re=insert_after_header_re,
+    )
 
     return services_tmp
 
