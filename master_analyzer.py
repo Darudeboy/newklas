@@ -458,6 +458,58 @@ def merge_deploy_plan_into_template_storage(
         end = end_m.start() if end_m else len(storage)
         return storage[:start] + new_block + "\n" + storage[end:], True
 
+    def _cleanup_release_section(storage: str, *, jira_macro_html: str) -> str:
+        """
+        В секции <h2>Релиз</h2> должно быть только Jira-макрос (и ничего больше).
+        Заменяем содержимое между заголовком 'Релиз' и следующим <h2> (или концом).
+        """
+        h2_release = re.compile(r"(?is)(<h2\b[^>]*>\s*Релиз\s*</h2>)")
+        m = h2_release.search(storage)
+        if not m:
+            return storage
+        start = m.end()
+        next_h2 = re.compile(r"(?is)<h2\b[^>]*>")
+        m2 = next_h2.search(storage, pos=start)
+        end = m2.start() if m2 else len(storage)
+        return storage[:start] + "\n" + jira_macro_html + "\n" + storage[end:]
+
+    def _replace_component_rows_within_section(
+        storage: str,
+        *,
+        section_title: str,
+        rows_html: str,
+    ) -> tuple[str, bool]:
+        """
+        Ищет секцию <h2>{section_title}</h2>, затем внутри её границ (до следующего <h2>)
+        находит первую таблицу с заголовком 'Компонент' и заменяет tbody rows.
+        """
+        heading_re = re.compile(
+            r"(?is)(<h2\b[^>]*>\s*" + re.escape(section_title) + r"\s*</h2>)"
+        )
+        m_head = heading_re.search(storage)
+        if not m_head:
+            return storage, False
+        sec_start = m_head.end()
+        next_h2 = re.compile(r"(?is)<h2\b[^>]*>")
+        m_next = next_h2.search(storage, pos=sec_start)
+        sec_end = m_next.start() if m_next else len(storage)
+        section = storage[sec_start:sec_end]
+
+        table_re_local = re.compile(r"(?is)<table\b[^>]*>[\s\S]*?</table>")
+        component_header_re_local = re.compile(r"(?is)<th\b[^>]*>\s*компонент\s*</th>")
+
+        for m_tbl in table_re_local.finditer(section):
+            tbl = m_tbl.group(0)
+            if not component_header_re_local.search(tbl):
+                continue
+            replaced = _replace_rows_in_table(tbl, rows_html)
+            if not replaced:
+                continue
+            new_section = section[: m_tbl.start()] + replaced + section[m_tbl.end() :]
+            return storage[:sec_start] + new_section + storage[sec_end:], True
+
+        return storage, False
+
     tmp = template_storage
 
     # 1) Update Jira macro key for the release block: replace the first jira macro key parameter.
@@ -473,7 +525,15 @@ def merge_deploy_plan_into_template_storage(
             f"<h2>Релиз</h2>\n<ac:structured-macro ac:name=\"jira\"><ac:parameter ac:name=\"key\">{safe_key}</ac:parameter></ac:structured-macro>",
         )
 
-    # 2) Replace rows inside tables under headings "План установки" and "План отката".
+    # Ensure: Release section contains only Jira macro.
+    jira_macro_only = (
+        f"<ac:structured-macro ac:name=\"jira\">"
+        f"<ac:parameter ac:name=\"key\">{safe_key}</ac:parameter>"
+        f"</ac:structured-macro>"
+    )
+    tmp = _cleanup_release_section(tmp, jira_macro_html=jira_macro_only)
+
+    # 2) Replace rows ONLY inside the correct sections.
     table_re = re.compile(r"(?is)<table\b[^>]*>[\s\S]*?</table>")
     component_header_re = re.compile(r"(?is)<th\b[^>]*>\s*компонент\s*</th>")
 
@@ -493,46 +553,13 @@ def merge_deploy_plan_into_template_storage(
         new_inner = "".join(kept) + (rows_html or "")
         return table_html[: m_tbody.start(1)] + new_inner + table_html[m_tbody.end(1) :]
 
-    def _replace_first_component_table_after_heading(storage: str, heading_text: str, rows_html: str) -> tuple[str, bool]:
-        # Find heading and then first table with component header after it.
-        heading_re = re.compile(r"(?is)<h2\b[^>]*>\s*" + re.escape(heading_text) + r"\s*</h2>")
-        m_head = heading_re.search(storage)
-        start_pos = m_head.end() if m_head else 0
-        for m_tbl in table_re.finditer(storage, pos=start_pos):
-            tbl = m_tbl.group(0)
-            if not component_header_re.search(tbl):
-                continue
-            replaced = _replace_rows_in_table(tbl, rows_html)
-            if not replaced:
-                continue
-            new_storage = storage[: m_tbl.start()] + replaced + storage[m_tbl.end() :]
-            return new_storage, True
-        return storage, False
-
     out = tmp
-    out, ok_install = _replace_first_component_table_after_heading(out, "План установки", install_rows_html)
-    out, ok_rollback = _replace_first_component_table_after_heading(out, "План отката", rollback_rows_html)
-
-    # If headings weren't found, fall back to replacing the first and second component tables in the page.
-    if not ok_install or not ok_rollback:
-        component_tables: List[tuple[int, int, str]] = []
-        for m_tbl in table_re.finditer(out):
-            tbl = m_tbl.group(0)
-            if component_header_re.search(tbl):
-                component_tables.append((m_tbl.start(), m_tbl.end(), tbl))
-        if component_tables:
-            if not ok_install and len(component_tables) >= 1:
-                s, e, tbl = component_tables[0]
-                repl = _replace_rows_in_table(tbl, install_rows_html)
-                if repl:
-                    out = out[:s] + repl + out[e:]
-                    ok_install = True
-            if not ok_rollback and len(component_tables) >= 2:
-                s, e, tbl = component_tables[1]
-                repl = _replace_rows_in_table(tbl, rollback_rows_html)
-                if repl:
-                    out = out[:s] + repl + out[e:]
-                    ok_rollback = True
+    out, ok_install = _replace_component_rows_within_section(
+        out, section_title="План установки", rows_html=install_rows_html
+    )
+    out, ok_rollback = _replace_component_rows_within_section(
+        out, section_title="План отката", rows_html=rollback_rows_html
+    )
 
     if not ok_install:
         fallback_install = (

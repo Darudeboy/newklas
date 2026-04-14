@@ -78,6 +78,7 @@ class DeployPlanMergeTest(unittest.TestCase):
           <h2>Релиз</h2>
           <ac:structured-macro ac:name="jira"><ac:parameter ac:name="key">OLD-REL</ac:parameter></ac:structured-macro>
           <!-- tables missing -->
+          <h2>Другая секция</h2>
           <ac:structured-macro ac:name="some-macro"><ac:parameter ac:name="x">KEEP2</ac:parameter></ac:structured-macro>
         </div>
         """
