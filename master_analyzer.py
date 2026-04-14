@@ -496,7 +496,9 @@ def merge_deploy_plan_into_template_storage(
         section = storage[sec_start:sec_end]
 
         table_re_local = re.compile(r"(?is)<table\b[^>]*>[\s\S]*?</table>")
+        macro_re_local = re.compile(r"(?is)<ac:structured-macro\b[^>]*>[\s\S]*?</ac:structured-macro>")
         component_header_re_local = re.compile(r"(?is)<th\b[^>]*>\s*компонент\s*</th>")
+        service_cell_re_local = re.compile(r"(?is)>(?:\\s*service\\s*)<")
 
         for m_tbl in table_re_local.finditer(section):
             tbl = m_tbl.group(0)
@@ -508,7 +510,30 @@ def merge_deploy_plan_into_template_storage(
             new_section = section[: m_tbl.start()] + replaced + section[m_tbl.end() :]
             return storage[:sec_start] + new_section + storage[sec_end:], True
 
-        return storage, False
+        # If the section contains a placeholder table/macro with 'service' in component, replace that whole block.
+        replacement_table = (
+            "<table><thead><tr>"
+            "<th></th><th>Команда</th><th>Компонент</th><th>Работы</th><th>Дата и время начала</th><th>Примечания</th>"
+            "</tr></thead><tbody>"
+            + (rows_html or "")
+            + "</tbody></table>"
+        )
+
+        for m_tbl in table_re_local.finditer(section):
+            tbl = m_tbl.group(0)
+            if service_cell_re_local.search(tbl):
+                new_section = section[: m_tbl.start()] + replacement_table + section[m_tbl.end() :]
+                return storage[:sec_start] + new_section + storage[sec_end:], True
+
+        for m_macro in macro_re_local.finditer(section):
+            macro = m_macro.group(0)
+            if service_cell_re_local.search(macro) or "service" in macro.lower():
+                new_section = section[: m_macro.start()] + replacement_table + section[m_macro.end() :]
+                return storage[:sec_start] + new_section + storage[sec_end:], True
+
+        # Otherwise insert our table right after the section heading (keep existing content below).
+        inserted_section = "\n" + replacement_table + "\n" + section
+        return storage[:sec_start] + inserted_section + storage[sec_end:], True
 
     tmp = template_storage
 
@@ -561,6 +586,17 @@ def merge_deploy_plan_into_template_storage(
         out, section_title="План отката", rows_html=rollback_rows_html
     )
 
+    def _insert_after_release(storage: str, snippet: str) -> str:
+        # Insert right after the Release section macro-only block, before the next h2 if present.
+        m_rel = re.search(
+            r"(?is)<h2\b[^>]*>\s*Релиз\s*</h2>\s*<ac:structured-macro\b[^>]*ac:name=\"jira\"[^>]*>[\s\S]*?</ac:structured-macro>",
+            storage,
+        )
+        if not m_rel:
+            return _insert_near_top(storage, snippet)
+        i = m_rel.end()
+        return storage[:i] + "\n" + snippet + "\n" + storage[i:]
+
     if not ok_install:
         fallback_install = (
             "<h2>План установки</h2>\n"
@@ -570,7 +606,8 @@ def merge_deploy_plan_into_template_storage(
             + (install_rows_html or "")
             + "</tbody></table>"
         )
-        out = _insert_near_top(out, fallback_install)
+        out = _insert_after_release(out, fallback_install)
+
     if not ok_rollback:
         fallback_rb = (
             "<h2>План отката</h2>\n"
@@ -580,7 +617,7 @@ def merge_deploy_plan_into_template_storage(
             + (rollback_rows_html or "")
             + "</tbody></table>"
         )
-        out = _insert_near_top(out, fallback_rb)
+        out = _insert_after_release(out, fallback_rb)
 
     return out
 
