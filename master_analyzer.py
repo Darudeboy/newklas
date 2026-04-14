@@ -8,6 +8,7 @@ from __future__ import annotations
 import html
 import logging
 import re
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
@@ -155,7 +156,8 @@ class ConfluenceDeployPlanGenerator:
             return {"success": False, "message": str(e), "details": ""}
 
         rk = (analysis_result.get("release_key") or "").strip().upper()
-        summary = html.escape(str(analysis_result.get("release_summary") or "N/A"))
+        summary_raw = str(analysis_result.get("release_summary") or "N/A")
+        summary = html.escape(summary_raw)
         services: List[str] = list(analysis_result.get("services") or [])
         team = html.escape(str(team_name or ""))
         space = (space_key or "").strip()
@@ -167,18 +169,21 @@ class ConfluenceDeployPlanGenerator:
 
         page_title = f"[{rk}] Deploy plan"
 
-        release_header_html = f"""
-<h1>Deploy plan: {html.escape(rk)}</h1>
-<p><strong>Релиз:</strong> {html.escape(rk)}<br/>
-<strong>Название:</strong> {summary}<br/>
-<strong>Команда:</strong> {team}</p>
-""".strip()
+        release_date_iso = extract_release_date_iso(summary_raw)
+        release_date_human = format_ru_date(release_date_iso) if release_date_iso else ""
 
-        # Rows for template table where the column "Компонент" must contain service name.
-        services_rows_html = build_component_table_rows(
+        # Rows for template tables where the column "Компонент" must contain service name.
+        install_rows_html = build_component_table_rows(
             services,
             team_label="Команда",
             default_work="Update+migration+deploy",
+            date_text=release_date_human or release_date_iso or "",
+        )
+        rollback_rows_html = build_component_table_rows(
+            services,
+            team_label="Команда",
+            default_work="откат на предыдущую стабильную версию",
+            date_text=release_date_human or release_date_iso or "",
         )
 
         # Preserve Confluence template structure by merging into template storage when possible.
@@ -187,24 +192,27 @@ class ConfluenceDeployPlanGenerator:
         if isinstance(tpl_storage, str) and tpl_storage:
             merged = merge_deploy_plan_into_template_storage(
                 tpl_storage,
-                release_header_html=release_header_html,
-                services_rows_html=services_rows_html,
+                release_key=rk,
+                install_rows_html=install_rows_html,
+                rollback_rows_html=rollback_rows_html,
             )
             if isinstance(merged, str) and merged.strip():
                 body = merged
 
         # Fallback: generate full body.
         if not body:
-            # Template missing/unavailable: render minimal but in the expected 5-column format.
+            # Template missing/unavailable: render minimal in the expected column layout.
             body = (
-                release_header_html
-                + "\n"
-                + "<h2>План установки</h2>\n"
-                + "<table><thead><tr>"
-                + "<th></th><th>Команда</th><th>Компонент</th><th>Работы</th><th>Дата и время начала</th><th>Примечания</th>"
-                + "</tr></thead><tbody>"
-                + (services_rows_html or "")
-                + "</tbody></table>"
+                f"<h2>Релиз</h2>\n"
+                f"<ac:structured-macro ac:name=\"jira\"><ac:parameter ac:name=\"key\">{html.escape(rk)}</ac:parameter></ac:structured-macro>\n"
+                f"<h2>План установки</h2>\n"
+                f"<table><thead><tr>"
+                f"<th></th><th>Команда</th><th>Компонент</th><th>Работы</th><th>Дата и время начала</th><th>Примечания</th>"
+                f"</tr></thead><tbody>{install_rows_html}</tbody></table>\n"
+                f"<h2>План отката</h2>\n"
+                f"<table><thead><tr>"
+                f"<th></th><th>Команда</th><th>Компонент</th><th>Работы</th><th>Дата и время начала</th><th>Примечания</th>"
+                f"</tr></thead><tbody>{rollback_rows_html}</tbody></table>\n"
             ).strip()
 
         parent_id: Optional[str] = None
@@ -231,6 +239,7 @@ class ConfluenceDeployPlanGenerator:
                     representation="storage",
                     minor_edit=False,
                 )
+                self._ensure_labels(cf, pid, tpl_labels)
                 page_url = f"{self.confluence_url}/pages/viewpage.action?pageId={pid}"
                 return {
                     "success": True,
@@ -259,6 +268,7 @@ class ConfluenceDeployPlanGenerator:
                     "details": "",
                 }
             pid = new_page.get("id")
+            self._ensure_labels(cf, pid, tpl_labels)
             page_url = f"{self.confluence_url}/pages/viewpage.action?pageId={pid}"
             return {
                 "success": True,
@@ -275,6 +285,23 @@ class ConfluenceDeployPlanGenerator:
                 if hasattr(e, "response")
                 else "",
             }
+
+    def _ensure_labels(self, cf: Any, page_id: Any, labels: Optional[List[str]]) -> None:
+        """
+        Some Confluence APIs ignore `labels=` on create_page; also labels can be absent on template.
+        Best-effort: ensure each template label is set on the target page.
+        """
+        if not page_id or not labels:
+            return
+        set_label = getattr(cf, "set_page_label", None)
+        if not callable(set_label):
+            return
+        for lbl in labels:
+            if isinstance(lbl, str) and lbl.strip():
+                try:
+                    set_label(page_id, lbl.strip())
+                except Exception:
+                    pass
 
 
 def replace_section_by_anchor(
@@ -309,6 +336,7 @@ def build_component_table_rows(
     *,
     team_label: str = "Команда",
     default_work: str = "Update+migration+deploy",
+    date_text: str = "",
 ) -> str:
     """
     Генерирует <tr> строки для таблицы шаблона Deploy plan.
@@ -318,6 +346,7 @@ def build_component_table_rows(
     rows: List[str] = []
     safe_team = html.escape(team_label or "Команда")
     safe_work = html.escape(default_work or "")
+    safe_date = html.escape(date_text or "")
     for i, svc in enumerate(services or [], 1):
         component = html.escape(str(svc))
         rows.append(
@@ -326,7 +355,7 @@ def build_component_table_rows(
             f"<td>{safe_team}</td>"
             f"<td>{component}</td>"
             f"<td>{safe_work}</td>"
-            "<td></td>"
+            f"<td>{safe_date}</td>"
             "<td></td>"
             "</tr>"
         )
@@ -337,17 +366,59 @@ def build_component_table_rows(
     return "".join(rows)
 
 
+def extract_release_date_iso(summary_raw: str) -> Optional[str]:
+    """
+    Extracts YYYY-MM-DD from typical release summary like '... Релиз-2025-02-07 ...'.
+    """
+    text = (summary_raw or "").strip()
+    if not text:
+        return None
+    m = re.search(r"\b(?:релиз-)?(20\d{2}-\d{2}-\d{2})\b", text, flags=re.IGNORECASE)
+    if not m:
+        return None
+    return m.group(1)
+
+
+def format_ru_date(iso_yyyy_mm_dd: str) -> Optional[str]:
+    """
+    Formats '2025-02-07' as '07 февр. 2025 г.' to match Confluence UI convention.
+    """
+    raw = (iso_yyyy_mm_dd or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.strptime(raw, "%Y-%m-%d").date()
+    except Exception:
+        return raw
+    months = {
+        1: "янв.",
+        2: "февр.",
+        3: "мар.",
+        4: "апр.",
+        5: "мая",
+        6: "июн.",
+        7: "июл.",
+        8: "авг.",
+        9: "сент.",
+        10: "окт.",
+        11: "нояб.",
+        12: "дек.",
+    }
+    return f"{dt.day:02d} {months.get(dt.month, '')} {dt.year} г.".strip()
+
+
 def merge_deploy_plan_into_template_storage(
     template_storage: str,
     *,
-    release_header_html: str,
-    services_rows_html: str,
+    release_key: str,
+    install_rows_html: str,
+    rollback_rows_html: str,
 ) -> Optional[str]:
     """
     Встраивает данные в template_storage, сохраняя макросы/таблицы шаблона.
-    - Обновляет заголовок h1 (если найден).
-    - Находит таблицу с заголовком "Компонент" и заменяет её строки (tbody) на services_rows_html,
-      сохраняя заголовок таблицы и остальные части шаблона.
+    - В блоке «Релиз» оставляем только Jira-макрос (key = release_key).
+    - В таблицах «План установки» и «План отката» (колонка «Компонент») заменяем строки (tbody),
+      сохраняя заголовки таблиц и прочие макросы шаблона.
     """
     if not template_storage:
         return None
@@ -387,79 +458,102 @@ def merge_deploy_plan_into_template_storage(
         end = end_m.start() if end_m else len(storage)
         return storage[:start] + new_block + "\n" + storage[end:], True
 
-    # Replace header: find h1 containing "deploy plan" (case-insensitive),
-    # and replace just this <h1> element (do not wipe template macros between blocks).
-    header_heading_re = re.compile(
-        r"<h1\b[^>]*>[\s\S]*?deploy\s*plan[\s\S]*?</h1>",
-        flags=re.IGNORECASE,
+    tmp = template_storage
+
+    # 1) Update Jira macro key for the release block: replace the first jira macro key parameter.
+    safe_key = html.escape((release_key or "").strip().upper())
+    jira_key_re = re.compile(
+        r"(?is)(<ac:structured-macro\b[^>]*ac:name=\"jira\"[^>]*>[\s\S]*?<ac:parameter\b[^>]*ac:name=\"key\"[^>]*>)([^<]*)(</ac:parameter>)"
     )
-    # End boundary right after the matched h1 (we replace only the h1 node).
-    end_after_h1_re = re.compile(r"", flags=re.IGNORECASE)
-    # Special-case: _replace_or_insert_block_by_heading needs a "next boundary" search.
-    # We'll use a boundary that matches the end of the matched h1 by searching from after_heading
-    # for the first element boundary; then we slice starting at m.start() and end at m.end().
-    # To keep the helper simple, do header replacement inline.
-    m_h1 = header_heading_re.search(template_storage)
-    if m_h1:
-        tmp = (
-            template_storage[: m_h1.start()]
-            + release_header_html
-            + "\n"
-            + template_storage[m_h1.end() :]
+    tmp, n_key = jira_key_re.subn(r"\1" + safe_key + r"\3", tmp, count=1)
+    if n_key < 1:
+        # If template has no macro at all, insert the minimal release block near top.
+        tmp = _insert_near_top(
+            tmp,
+            f"<h2>Релиз</h2>\n<ac:structured-macro ac:name=\"jira\"><ac:parameter ac:name=\"key\">{safe_key}</ac:parameter></ac:structured-macro>",
         )
-    else:
-        tmp = _insert_near_top(template_storage, release_header_html)
 
-    # Replace rows inside the first table that contains header cell "Компонент".
-    # Keep the table header; replace only the data rows.
-    # We support both <thead> and header row inside <tbody>.
-    table_with_component_re = re.compile(
-        r"(?is)(<table\b[^>]*>)([\s\S]*?)(</table>)"
-    )
+    # 2) Replace rows inside tables under headings "План установки" and "План отката".
+    table_re = re.compile(r"(?is)<table\b[^>]*>[\s\S]*?</table>")
+    component_header_re = re.compile(r"(?is)<th\b[^>]*>\s*компонент\s*</th>")
 
-    def _table_has_component_header(table_html: str) -> bool:
-        return bool(re.search(r"(?is)<th\b[^>]*>\s*компонент\s*</th>", table_html))
-
-    def _replace_table_rows(table_html: str) -> Optional[str]:
-        # Prefer <tbody> replacement while preserving header rows (th).
+    def _replace_rows_in_table(table_html: str, rows_html: str) -> Optional[str]:
         m_tbody = re.search(r"(?is)<tbody\b[^>]*>([\s\S]*?)</tbody>", table_html)
         if not m_tbody:
             return None
         tbody_inner = m_tbody.group(1)
-        # Keep any header rows inside tbody (rows that contain <th>).
-        header_rows = "".join(re.findall(r"(?is)<tr\b[^>]*>[\s\S]*?</tr>", tbody_inner)[:1])
-        # If the first row isn't a header row, keep nothing.
-        if header_rows and not re.search(r"(?is)<th\b", header_rows):
-            header_rows = ""
-        new_tbody_inner = header_rows + (services_rows_html or "")
-        return (
-            table_html[: m_tbody.start(1)]
-            + new_tbody_inner
-            + table_html[m_tbody.end(1) :]
-        )
+        # Keep all leading header rows (<tr> containing <th>).
+        all_rows = re.findall(r"(?is)<tr\b[^>]*>[\s\S]*?</tr>", tbody_inner)
+        kept: List[str] = []
+        for row in all_rows:
+            if re.search(r"(?is)<th\b", row):
+                kept.append(row)
+            else:
+                break
+        new_inner = "".join(kept) + (rows_html or "")
+        return table_html[: m_tbody.start(1)] + new_inner + table_html[m_tbody.end(1) :]
 
-    replaced_any = False
+    def _replace_first_component_table_after_heading(storage: str, heading_text: str, rows_html: str) -> tuple[str, bool]:
+        # Find heading and then first table with component header after it.
+        heading_re = re.compile(r"(?is)<h2\b[^>]*>\s*" + re.escape(heading_text) + r"\s*</h2>")
+        m_head = heading_re.search(storage)
+        start_pos = m_head.end() if m_head else 0
+        for m_tbl in table_re.finditer(storage, pos=start_pos):
+            tbl = m_tbl.group(0)
+            if not component_header_re.search(tbl):
+                continue
+            replaced = _replace_rows_in_table(tbl, rows_html)
+            if not replaced:
+                continue
+            new_storage = storage[: m_tbl.start()] + replaced + storage[m_tbl.end() :]
+            return new_storage, True
+        return storage, False
+
     out = tmp
-    for m in table_with_component_re.finditer(tmp):
-        table_full = m.group(0)
-        if not _table_has_component_header(table_full):
-            continue
-        replaced = _replace_table_rows(table_full)
-        if replaced:
-            out = out.replace(table_full, replaced, 1)
-            replaced_any = True
-            break
+    out, ok_install = _replace_first_component_table_after_heading(out, "План установки", install_rows_html)
+    out, ok_rollback = _replace_first_component_table_after_heading(out, "План отката", rollback_rows_html)
 
-    if not replaced_any:
-        # No matching table found: insert a minimal component table near top after header.
-        fallback_table = (
+    # If headings weren't found, fall back to replacing the first and second component tables in the page.
+    if not ok_install or not ok_rollback:
+        component_tables: List[tuple[int, int, str]] = []
+        for m_tbl in table_re.finditer(out):
+            tbl = m_tbl.group(0)
+            if component_header_re.search(tbl):
+                component_tables.append((m_tbl.start(), m_tbl.end(), tbl))
+        if component_tables:
+            if not ok_install and len(component_tables) >= 1:
+                s, e, tbl = component_tables[0]
+                repl = _replace_rows_in_table(tbl, install_rows_html)
+                if repl:
+                    out = out[:s] + repl + out[e:]
+                    ok_install = True
+            if not ok_rollback and len(component_tables) >= 2:
+                s, e, tbl = component_tables[1]
+                repl = _replace_rows_in_table(tbl, rollback_rows_html)
+                if repl:
+                    out = out[:s] + repl + out[e:]
+                    ok_rollback = True
+
+    if not ok_install:
+        fallback_install = (
+            "<h2>План установки</h2>\n"
             "<table><thead><tr>"
             "<th></th><th>Команда</th><th>Компонент</th><th>Работы</th><th>Дата и время начала</th><th>Примечания</th>"
             "</tr></thead><tbody>"
-            + (services_rows_html or "")
+            + (install_rows_html or "")
             + "</tbody></table>"
         )
-        out = _insert_near_top(out, "<h2>План установки</h2>\n" + fallback_table)
+        out = _insert_near_top(out, fallback_install)
+    if not ok_rollback:
+        fallback_rb = (
+            "<h2>План отката</h2>\n"
+            "<table><thead><tr>"
+            "<th></th><th>Команда</th><th>Компонент</th><th>Работы</th><th>Дата и время начала</th><th>Примечания</th>"
+            "</tr></thead><tbody>"
+            + (rollback_rows_html or "")
+            + "</tbody></table>"
+        )
+        out = _insert_near_top(out, fallback_rb)
 
     return out
 

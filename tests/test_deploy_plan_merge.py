@@ -1,7 +1,12 @@
 import unittest
 
 
-from master_analyzer import merge_deploy_plan_into_template_storage, build_component_table_rows
+from master_analyzer import (
+    build_component_table_rows,
+    extract_release_date_iso,
+    format_ru_date,
+    merge_deploy_plan_into_template_storage,
+)
 
 
 class DeployPlanMergeTest(unittest.TestCase):
@@ -9,14 +14,31 @@ class DeployPlanMergeTest(unittest.TestCase):
         rows = build_component_table_rows(["app-smart-profile"], team_label="Команда")
         self.assertIn("<td>app-smart-profile</td>", rows)
 
+    def test_extract_release_date_iso(self):
+        self.assertEqual(
+            extract_release_date_iso("HRPRELEASE-76202 - Релиз-2025-02-07"),
+            "2025-02-07",
+        )
+
+    def test_format_ru_date(self):
+        self.assertEqual(format_ru_date("2025-02-07"), "07 февр. 2025 г.")
+
     def test_merge_replaces_header_and_services_and_preserves_other_html(self):
         template_storage = """
         <div>
           <h1>Deploy plan: OLD-REL</h1>
-          <p><strong>Релиз:</strong> OLD-REL<br/>
-          <strong>Название:</strong> old summary<br/>
-          <strong>Команда:</strong> old team</p>
+          <h2>Релиз</h2>
+          <ac:structured-macro ac:name="jira"><ac:parameter ac:name="key">OLD-REL</ac:parameter></ac:structured-macro>
           <h2>План установки</h2>
+          <table>
+            <tbody>
+              <tr>
+                <th></th><th>Команда</th><th>Компонент</th><th>Работы</th><th>Дата и время начала</th><th>Примечания</th>
+              </tr>
+              <tr><td>1</td><td>Команда</td><td>old-component</td><td>old</td><td></td><td></td></tr>
+            </tbody>
+          </table>
+          <h2>План отката</h2>
           <table>
             <tbody>
               <tr>
@@ -29,24 +51,23 @@ class DeployPlanMergeTest(unittest.TestCase):
         </div>
         """
 
-        release_header_html = """
-<h1>Deploy plan: NEW-REL</h1>
-<p><strong>Релиз:</strong> NEW-REL<br/>
-<strong>Название:</strong> new summary<br/>
-<strong>Команда:</strong> new team</p>
-""".strip()
-
-        services_rows_html = build_component_table_rows(["app-smart-profile"], team_label="Команда")
+        install_rows_html = build_component_table_rows(
+            ["app-smart-profile"], team_label="Команда", date_text="07 февр. 2025 г."
+        )
+        rollback_rows_html = build_component_table_rows(
+            ["app-smart-profile"], team_label="Команда", date_text="07 февр. 2025 г."
+        )
 
         merged = merge_deploy_plan_into_template_storage(
             template_storage,
-            release_header_html=release_header_html,
-            services_rows_html=services_rows_html,
+            release_key="NEW-REL",
+            install_rows_html=install_rows_html,
+            rollback_rows_html=rollback_rows_html,
         )
         self.assertIsNotNone(merged)
         assert merged is not None
 
-        self.assertIn("Deploy plan: NEW-REL", merged)
+        self.assertIn(">NEW-REL</ac:parameter>", merged)
         self.assertIn("app-smart-profile", merged)
         self.assertNotIn("old-component", merged)
         self.assertIn("KEEP", merged)
@@ -54,32 +75,29 @@ class DeployPlanMergeTest(unittest.TestCase):
     def test_merge_inserts_services_if_services_block_missing(self):
         template_storage = """
         <div>
-          <h1>Deploy plan: OLD-REL</h1>
-          <p><strong>Релиз:</strong> OLD-REL<br/>
-          <strong>Название:</strong> old summary<br/>
-          <strong>Команда:</strong> old team</p>
-          <!-- component table missing -->
+          <h2>Релиз</h2>
+          <ac:structured-macro ac:name="jira"><ac:parameter ac:name="key">OLD-REL</ac:parameter></ac:structured-macro>
+          <!-- tables missing -->
           <ac:structured-macro ac:name="some-macro"><ac:parameter ac:name="x">KEEP2</ac:parameter></ac:structured-macro>
         </div>
         """
 
-        release_header_html = """
-<h1>Deploy plan: NEW-REL</h1>
-<p><strong>Релиз:</strong> NEW-REL<br/>
-<strong>Название:</strong> new summary<br/>
-<strong>Команда:</strong> new team</p>
-""".strip()
-
-        services_rows_html = build_component_table_rows(["app-smart-profile"], team_label="Команда")
+        install_rows_html = build_component_table_rows(
+            ["app-smart-profile"], team_label="Команда", date_text="07 февр. 2025 г."
+        )
+        rollback_rows_html = build_component_table_rows(
+            ["app-smart-profile"], team_label="Команда", date_text="07 февр. 2025 г."
+        )
 
         merged = merge_deploy_plan_into_template_storage(
             template_storage,
-            release_header_html=release_header_html,
-            services_rows_html=services_rows_html,
+            release_key="NEW-REL",
+            install_rows_html=install_rows_html,
+            rollback_rows_html=rollback_rows_html,
         )
         self.assertIsNotNone(merged)
         assert merged is not None
-        self.assertIn("Deploy plan: NEW-REL", merged)
+        self.assertIn(">NEW-REL</ac:parameter>", merged)
         self.assertIn("app-smart-profile", merged)
         self.assertIn("KEEP2", merged)
 
@@ -89,7 +107,18 @@ class DeployPlanMergeTest(unittest.TestCase):
           <h1><span>Deploy</span> plan: OLD-REL</h1>
           <ac:structured-macro ac:name="info"><ac:parameter ac:name="title">KEEP_INFO</ac:parameter></ac:structured-macro>
           <p>какой-то текст</p>
+          <h2>Релиз</h2>
+          <ac:structured-macro ac:name="jira"><ac:parameter ac:name="key">OLD-REL</ac:parameter></ac:structured-macro>
           <h2>План установки</h2>
+          <table>
+            <tbody>
+              <tr>
+                <th></th><th>Команда</th><th>Компонент</th><th>Работы</th><th>Дата и время начала</th><th>Примечания</th>
+              </tr>
+              <tr><td>1</td><td>Команда</td><td>old-component</td><td>old</td><td></td><td></td></tr>
+            </tbody>
+          </table>
+          <h2>План отката</h2>
           <table>
             <tbody>
               <tr>
@@ -103,23 +132,22 @@ class DeployPlanMergeTest(unittest.TestCase):
         </div>
         """
 
-        release_header_html = """
-<h1>Deploy plan: NEW-REL</h1>
-<p><strong>Релиз:</strong> NEW-REL<br/>
-<strong>Название:</strong> new summary<br/>
-<strong>Команда:</strong> new team</p>
-""".strip()
-
-        services_rows_html = build_component_table_rows(["app-smart-profile"], team_label="Команда")
+        install_rows_html = build_component_table_rows(
+            ["app-smart-profile"], team_label="Команда", date_text="07 февр. 2025 г."
+        )
+        rollback_rows_html = build_component_table_rows(
+            ["app-smart-profile"], team_label="Команда", date_text="07 февр. 2025 г."
+        )
 
         merged = merge_deploy_plan_into_template_storage(
             template_storage,
-            release_header_html=release_header_html,
-            services_rows_html=services_rows_html,
+            release_key="NEW-REL",
+            install_rows_html=install_rows_html,
+            rollback_rows_html=rollback_rows_html,
         )
         self.assertIsNotNone(merged)
         assert merged is not None
-        self.assertIn("Deploy plan: NEW-REL", merged)
+        self.assertIn(">NEW-REL</ac:parameter>", merged)
         self.assertIn("app-smart-profile", merged)
         self.assertIn("KEEP_AFTER", merged)
 
