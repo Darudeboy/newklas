@@ -152,6 +152,45 @@ class DeployPlanMergeTest(unittest.TestCase):
         self.assertIn("app-smart-profile", merged)
         self.assertIn("KEEP_AFTER", merged)
 
+    def test_merge_strips_placeholder_service_blocks_in_install_section(self):
+        template_storage = """
+        <div>
+          <h2>Релиз</h2>
+          <ac:structured-macro ac:name="jira"><ac:parameter ac:name="key">OLD-REL</ac:parameter></ac:structured-macro>
+          <h2>План установки</h2>
+          <table><tbody>
+            <tr><th></th><th>Команда</th><th>Компонент</th><th>Работы</th><th>Дата и время начала</th><th>Примечания</th></tr>
+            <tr><td>1</td><td>Команда</td><td>old-component</td><td>old</td><td></td><td></td></tr>
+          </tbody></table>
+          <table><tbody>
+            <tr><th></th><th>Команда</th><th>Компонент</th><th>Работы</th><th>Дата и время начала</th><th>Примечания</th></tr>
+            <tr><td>1</td><td>Команда</td><td>service</td><td>Update+migration+deploy</td><td>25 февр. 2025 г.</td><td></td></tr>
+          </tbody></table>
+          <h2>План отката</h2>
+          <table><tbody>
+            <tr><th></th><th>Команда</th><th>Компонент</th><th>Работы</th><th>Дата и время начала</th><th>Примечания</th></tr>
+            <tr><td>1</td><td>Команда</td><td>service</td><td>rollback</td><td>25 февр. 2025 г.</td><td></td></tr>
+          </tbody></table>
+        </div>
+        """
+
+        install_rows_html = build_component_table_rows(
+            ["app-smart-profile"], team_label="Команда", date_text="07 февр. 2025 г."
+        )
+        rollback_rows_html = build_component_table_rows(
+            ["app-smart-profile"], team_label="Команда", date_text="07 февр. 2025 г."
+        )
+
+        merged = merge_deploy_plan_into_template_storage(
+            template_storage,
+            release_key="NEW-REL",
+            install_rows_html=install_rows_html,
+            rollback_rows_html=rollback_rows_html,
+        )
+        assert merged is not None
+        self.assertIn("app-smart-profile", merged)
+        self.assertNotIn(">service<", merged)
+
 
 if __name__ == "__main__":
     unittest.main()

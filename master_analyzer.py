@@ -291,12 +291,15 @@ class ConfluenceDeployPlanGenerator:
         Some Confluence APIs ignore `labels=` on create_page; also labels can be absent on template.
         Best-effort: ensure each template label is set on the target page.
         """
-        if not page_id or not labels:
+        if not page_id:
             return
         set_label = getattr(cf, "set_page_label", None)
         if not callable(set_label):
             return
-        for lbl in labels:
+        # Required label for approvals.
+        required = ["hrp_deploy"]
+        all_labels = list(labels or []) + required
+        for lbl in all_labels:
             if isinstance(lbl, str) and lbl.strip():
                 try:
                     set_label(page_id, lbl.strip())
@@ -498,7 +501,20 @@ def merge_deploy_plan_into_template_storage(
         table_re_local = re.compile(r"(?is)<table\b[^>]*>[\s\S]*?</table>")
         macro_re_local = re.compile(r"(?is)<ac:structured-macro\b[^>]*>[\s\S]*?</ac:structured-macro>")
         component_header_re_local = re.compile(r"(?is)<th\b[^>]*>\s*компонент\s*</th>")
-        service_cell_re_local = re.compile(r"(?is)>(?:\\s*service\\s*)<")
+        service_cell_re_local = re.compile(r"(?is)>(?:\s*service\s*)<")
+
+        def _strip_placeholder_blocks(inner: str) -> str:
+            # Remove any leftover placeholder blocks with 'service' to avoid duplicates.
+            out_inner = inner
+            for m_tbl in list(table_re_local.finditer(out_inner)):
+                tbl = m_tbl.group(0)
+                if service_cell_re_local.search(tbl):
+                    out_inner = out_inner.replace(tbl, "", 1)
+            for m_macro in list(macro_re_local.finditer(out_inner)):
+                macro = m_macro.group(0)
+                if service_cell_re_local.search(macro) or "service" in macro.lower():
+                    out_inner = out_inner.replace(macro, "", 1)
+            return out_inner
 
         for m_tbl in table_re_local.finditer(section):
             tbl = m_tbl.group(0)
@@ -508,6 +524,7 @@ def merge_deploy_plan_into_template_storage(
             if not replaced:
                 continue
             new_section = section[: m_tbl.start()] + replaced + section[m_tbl.end() :]
+            new_section = _strip_placeholder_blocks(new_section)
             return storage[:sec_start] + new_section + storage[sec_end:], True
 
         # If the section contains a placeholder table/macro with 'service' in component, replace that whole block.
@@ -523,16 +540,18 @@ def merge_deploy_plan_into_template_storage(
             tbl = m_tbl.group(0)
             if service_cell_re_local.search(tbl):
                 new_section = section[: m_tbl.start()] + replacement_table + section[m_tbl.end() :]
+                new_section = _strip_placeholder_blocks(new_section)
                 return storage[:sec_start] + new_section + storage[sec_end:], True
 
         for m_macro in macro_re_local.finditer(section):
             macro = m_macro.group(0)
             if service_cell_re_local.search(macro) or "service" in macro.lower():
                 new_section = section[: m_macro.start()] + replacement_table + section[m_macro.end() :]
+                new_section = _strip_placeholder_blocks(new_section)
                 return storage[:sec_start] + new_section + storage[sec_end:], True
 
         # Otherwise insert our table right after the section heading (keep existing content below).
-        inserted_section = "\n" + replacement_table + "\n" + section
+        inserted_section = "\n" + replacement_table + "\n" + _strip_placeholder_blocks(section)
         return storage[:sec_start] + inserted_section + storage[sec_end:], True
 
     tmp = template_storage
