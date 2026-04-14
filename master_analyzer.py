@@ -167,15 +167,6 @@ class ConfluenceDeployPlanGenerator:
 
         page_title = f"[{rk}] Deploy plan"
 
-        rows: List[str] = []
-        for i, svc in enumerate(services, 1):
-            s = html.escape(str(svc))
-            rows.append(f"<tr><td>{i}</td><td>{s}</td></tr>")
-        table = (
-            "<table><thead><tr><th>#</th><th>Сервис / репозиторий</th></tr></thead>"
-            f"<tbody>{''.join(rows) if rows else '<tr><td colspan=\"2\">Нет сервисов</td></tr>'}</tbody></table>"
-        )
-
         release_header_html = f"""
 <h1>Deploy plan: {html.escape(rk)}</h1>
 <p><strong>Релиз:</strong> {html.escape(rk)}<br/>
@@ -183,11 +174,12 @@ class ConfluenceDeployPlanGenerator:
 <strong>Команда:</strong> {team}</p>
 """.strip()
 
-        services_section_html = f"""
-<h2>Сервисы (влитые в master)</h2>
-{table}
-<p><em>Сгенерировано инструментом Blast.</em></p>
-""".strip()
+        # Rows for template table where the column "Компонент" must contain service name.
+        services_rows_html = build_component_table_rows(
+            services,
+            team_label="Команда",
+            default_work="Update+migration+deploy",
+        )
 
         # Preserve Confluence template structure by merging into template storage when possible.
         body = ""
@@ -196,14 +188,24 @@ class ConfluenceDeployPlanGenerator:
             merged = merge_deploy_plan_into_template_storage(
                 tpl_storage,
                 release_header_html=release_header_html,
-                services_section_html=services_section_html,
+                services_rows_html=services_rows_html,
             )
             if isinstance(merged, str) and merged.strip():
                 body = merged
 
         # Fallback: generate full body.
         if not body:
-            body = (release_header_html + "\n" + services_section_html).strip()
+            # Template missing/unavailable: render minimal but in the expected 5-column format.
+            body = (
+                release_header_html
+                + "\n"
+                + "<h2>План установки</h2>\n"
+                + "<table><thead><tr>"
+                + "<th></th><th>Команда</th><th>Компонент</th><th>Работы</th><th>Дата и время начала</th><th>Примечания</th>"
+                + "</tr></thead><tbody>"
+                + (services_rows_html or "")
+                + "</tbody></table>"
+            ).strip()
 
         parent_id: Optional[str] = None
         if parent_page_title:
@@ -302,16 +304,50 @@ def replace_section_by_anchor(
     return replaced, True
 
 
+def build_component_table_rows(
+    services: List[str],
+    *,
+    team_label: str = "Команда",
+    default_work: str = "Update+migration+deploy",
+) -> str:
+    """
+    Генерирует <tr> строки для таблицы шаблона Deploy plan.
+    Ожидаемый формат колонок (как на эталонном скрине):
+    [#] [Команда] [Компонент] [Работы] [Дата и время начала] [Примечания]
+    """
+    rows: List[str] = []
+    safe_team = html.escape(team_label or "Команда")
+    safe_work = html.escape(default_work or "")
+    for i, svc in enumerate(services or [], 1):
+        component = html.escape(str(svc))
+        rows.append(
+            "<tr>"
+            f"<td>{i}</td>"
+            f"<td>{safe_team}</td>"
+            f"<td>{component}</td>"
+            f"<td>{safe_work}</td>"
+            "<td></td>"
+            "<td></td>"
+            "</tr>"
+        )
+    if not rows:
+        rows.append(
+            "<tr><td colspan=\"6\">Нет сервисов</td></tr>"
+        )
+    return "".join(rows)
+
+
 def merge_deploy_plan_into_template_storage(
     template_storage: str,
     *,
     release_header_html: str,
-    services_section_html: str,
+    services_rows_html: str,
 ) -> Optional[str]:
     """
-    Встраивает две секции в template_storage:
-    - <h1>Deploy plan: ...</h1> + блок <p>...Команда...</p>
-    - секция <h2>Сервисы (влитые в master)</h2> + таблица + note
+    Встраивает данные в template_storage, сохраняя макросы/таблицы шаблона.
+    - Обновляет заголовок h1 (если найден).
+    - Находит таблицу с заголовком "Компонент" и заменяет её строки (tbody) на services_rows_html,
+      сохраняя заголовок таблицы и остальные части шаблона.
     """
     if not template_storage:
         return None
@@ -374,30 +410,58 @@ def merge_deploy_plan_into_template_storage(
     else:
         tmp = _insert_near_top(template_storage, release_header_html)
 
-    # Replace services: find h2 containing "Сервисы" and replace until next h2 (or end).
-    # If missing, insert right after the header block if possible; otherwise near top.
-    services_heading_re = re.compile(
-        r"<h2\b[^>]*>[\s\S]*?сервисы[\s\S]*?</h2>",
-        flags=re.IGNORECASE,
-    )
-    # Services end boundary: next section heading, next macro, or container close.
-    services_block_end_re = re.compile(
-        r"(?i)(<h2\b|<ac:structured-macro\b|</div>|</section>|</body>)"
-    )
-    # Insert services after the (possibly replaced) header, best-effort.
-    insert_after_header_re = re.compile(
-        r"<h1\b[^>]*>[\s\S]*?deploy\s*plan[\s\S]*?</h1>",
-        flags=re.IGNORECASE,
-    )
-    services_tmp, _services_replaced = _replace_or_insert_block_by_heading(
-        tmp,
-        heading_re=services_heading_re,
-        block_end_re=services_block_end_re,
-        new_block=services_section_html,
-        insert_after_re=insert_after_header_re,
+    # Replace rows inside the first table that contains header cell "Компонент".
+    # Keep the table header; replace only the data rows.
+    # We support both <thead> and header row inside <tbody>.
+    table_with_component_re = re.compile(
+        r"(?is)(<table\b[^>]*>)([\s\S]*?)(</table>)"
     )
 
-    return services_tmp
+    def _table_has_component_header(table_html: str) -> bool:
+        return bool(re.search(r"(?is)<th\b[^>]*>\s*компонент\s*</th>", table_html))
+
+    def _replace_table_rows(table_html: str) -> Optional[str]:
+        # Prefer <tbody> replacement while preserving header rows (th).
+        m_tbody = re.search(r"(?is)<tbody\b[^>]*>([\s\S]*?)</tbody>", table_html)
+        if not m_tbody:
+            return None
+        tbody_inner = m_tbody.group(1)
+        # Keep any header rows inside tbody (rows that contain <th>).
+        header_rows = "".join(re.findall(r"(?is)<tr\b[^>]*>[\s\S]*?</tr>", tbody_inner)[:1])
+        # If the first row isn't a header row, keep nothing.
+        if header_rows and not re.search(r"(?is)<th\b", header_rows):
+            header_rows = ""
+        new_tbody_inner = header_rows + (services_rows_html or "")
+        return (
+            table_html[: m_tbody.start(1)]
+            + new_tbody_inner
+            + table_html[m_tbody.end(1) :]
+        )
+
+    replaced_any = False
+    out = tmp
+    for m in table_with_component_re.finditer(tmp):
+        table_full = m.group(0)
+        if not _table_has_component_header(table_full):
+            continue
+        replaced = _replace_table_rows(table_full)
+        if replaced:
+            out = out.replace(table_full, replaced, 1)
+            replaced_any = True
+            break
+
+    if not replaced_any:
+        # No matching table found: insert a minimal component table near top after header.
+        fallback_table = (
+            "<table><thead><tr>"
+            "<th></th><th>Команда</th><th>Компонент</th><th>Работы</th><th>Дата и время начала</th><th>Примечания</th>"
+            "</tr></thead><tbody>"
+            + (services_rows_html or "")
+            + "</tbody></table>"
+        )
+        out = _insert_near_top(out, "<h2>План установки</h2>\n" + fallback_table)
+
+    return out
 
 
 class MasterServicesAnalyzer:
