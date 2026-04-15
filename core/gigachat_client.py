@@ -79,6 +79,20 @@ class GigaChatClient:
             and self.person_id
         )
 
+    def _should_trust_env_proxies(self) -> bool:
+        """
+        requests.Session.trust_env controls usage of HTTP(S)_PROXY, NO_PROXY, etc.
+        In some корпоративные сети доступ к hr-ift.* возможен только через proxy,
+        поэтому это поведение делаем настраиваемым.
+        """
+        v = (os.getenv("GIGACHAT_TRUST_ENV", "") or "").strip().lower()
+        if v in ("0", "false", "no", "off"):
+            return False
+        if v in ("1", "true", "yes", "on"):
+            return True
+        # Default: trust environment (safer for corporate networks).
+        return True
+
     def _ensure_token(self) -> Tuple[bool, str]:
         if self._access_token and time.time() < self._token_expires_at:
             return True, ""
@@ -113,8 +127,7 @@ class GigaChatClient:
             )
             s.mount("https://", HTTPAdapter(max_retries=retry))
             s.mount("http://", HTTPAdapter(max_retries=retry))
-            # Avoid environment proxies unexpectedly intercepting auth.
-            s.trust_env = False
+            s.trust_env = self._should_trust_env_proxies()
             r = s.post(
                 self.token_url,
                 data=payload,
@@ -125,7 +138,8 @@ class GigaChatClient:
             )
         except Exception as e:
             logger.exception("GigaChat token request failed")
-            return False, str(e)
+            proxy_hint = "trust_env=True" if self._should_trust_env_proxies() else "trust_env=False"
+            return False, f"{e} ({proxy_hint})"
         if r.status_code != 200:
             return False, f"token HTTP {r.status_code}: {(r.text or '')[:300]}"
         try:
@@ -170,7 +184,7 @@ class GigaChatClient:
         }
         try:
             s = requests.Session()
-            s.trust_env = False
+            s.trust_env = self._should_trust_env_proxies()
             r = s.post(
                 self.api_url,
                 headers=headers,
@@ -180,7 +194,8 @@ class GigaChatClient:
             )
         except Exception as e:
             logger.exception("GigaChat completion failed")
-            return False, str(e)
+            proxy_hint = "trust_env=True" if self._should_trust_env_proxies() else "trust_env=False"
+            return False, f"{e} ({proxy_hint})"
         if r.status_code != 200:
             return False, f"HTTP {r.status_code}: {(r.text or '')[:500]}"
         try:
