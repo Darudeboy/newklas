@@ -22,13 +22,13 @@ class FakeDpm(DpmClient):
 
 def test_extract_ci_normalizes_to_cio():
     issue = {"fields": {"summary": "Релиз HumanSmartProfile(8553253)"}}
-    assert DpmClient.extract_ci_from_release(issue) == "CIO8553253"
+    assert DpmClient.extract_ci_from_release(issue) == "CI08553253"
 
     issue2 = {"fields": {"summary": "CI08553253"}}
-    assert DpmClient.extract_ci_from_release(issue2) == "CIO8553253"
+    assert DpmClient.extract_ci_from_release(issue2) == "CI08553253"
 
     issue3 = {"fields": {"summary": "CIO8553253"}}
-    assert DpmClient.extract_ci_from_release(issue3) == "CIO8553253"
+    assert DpmClient.extract_ci_from_release(issue3) == "CI08553253"
 
 
 def test_normalize_base_url_from_frontend_link():

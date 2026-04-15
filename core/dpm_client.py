@@ -327,10 +327,11 @@ class DpmClient:
         """
         Извлекает КЭ приложения из JIRA-задачи релиза.
 
-        DPM использует формат `CIO<digits>` (буква O, а не ноль).
+        Канонический формат КЭ: `CI<digits>`, часто с ведущим 0 после CI,
+        например `CI08553253`.
         Примеры источников в Jira:
         - поле «КЭ»: HumanSmartProfile(8553253)
-        - header/контекст: CIO8553253
+        - header/контекст: CI08553253 / CIO8553253
         """
         fields = release_issue.get("fields", {}) or {}
         rendered = release_issue.get("renderedFields", {}) or {}
@@ -340,14 +341,15 @@ class DpmClient:
             t = (s or "").strip()
             if not t:
                 return None
-            # Allow CIO855..., CI0855..., CI0..., etc. Normalize to CIO + digits.
+            # Allow CIO855..., CI0855..., CI0..., etc. Normalize to CI0 + digits.
             m = re.search(r"\bCI[O0]?(\d{5,})\b", t, re.IGNORECASE)
             if m:
-                return f"CIO{m.group(1)}"
-            # HumanSmartProfile(8553253) -> CIO8553253
+                digits = m.group(1)
+                return f"CI0{digits}"
+            # HumanSmartProfile(8553253) -> CI08553253
             m = re.search(r"\w+\((\d{5,})\)", t)
             if m:
-                return f"CIO{m.group(1)}"
+                return f"CI0{m.group(1)}"
             return None
 
         # 0) Look for fields whose display name resembles "КЭ" (but avoid "ИТ-услуга")
@@ -506,8 +508,8 @@ class DpmClient:
         """
         Найти приложение/объект DPM по КЭ.
 
-        На практике `entityByKey` принимает `CIO<digits>` (и иногда варианты).
-        Пробуем последовательность ключей: exact, CIO-normalized, digits-only.
+        На практике встречаются оба формата: `CI0...` и `CIO...`.
+        Пробуем оба варианта + исходное значение.
         """
         safe_ci = (ci_number or "").strip()
         if not safe_ci:
@@ -519,6 +521,13 @@ class DpmClient:
         if norm and norm not in candidates:
             candidates.append(norm)
         digits = re.sub(r"\D", "", safe_ci)
+        if digits:
+            ci0 = f"CI0{digits}"
+            if ci0 not in candidates:
+                candidates.append(ci0)
+            cio = f"CIO{digits}"
+            if cio not in candidates:
+                candidates.append(cio)
         if digits and digits not in candidates:
             candidates.append(digits)
 
@@ -548,7 +557,7 @@ class DpmClient:
         suffix = f" (последняя ошибка: {last_err})" if last_err else ""
         return None, (
             f"Приложение с КЭ={safe_ci} не найдено в DPM через entityByKey.{suffix}\n"
-            f"Проверь, что КЭ имеет формат CIO<digits> и что токен DPM валиден."
+            f"Проверь, что КЭ имеет формат CI<digits> (например CI08553253) и что токен DPM валиден."
         )
 
     def list_services(self, app_id: int) -> Tuple[List[Dict[str, Any]], str]:
