@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # ────────────────────────────────────────────────────────────────
 # Конфиг
 # ────────────────────────────────────────────────────────────────
-DPM_URL = os.getenv("DPM_URL", "").rstrip("/")
+DPM_URL = (os.getenv("DPM_BASE_URL", "") or os.getenv("DPM_URL", "")).rstrip("/")
 DPM_TOKEN = os.getenv("DPM_TOKEN", "")
 DPM_VERIFY_SSL = os.getenv("DPM_VERIFY_SSL", "0").strip().lower() not in (
     "0",
@@ -532,16 +532,34 @@ class DpmClient:
             return None, f"Ошибка получения RC для RAO {rao_name} (id={rao_id}): {e}"
         if not rc_list:
             return None, f"Релизы для {rao_name} (RAO id={rao_id}) не найдены. Искали: {safe_version}"
+
+        matches: list[tuple[str, Any]] = []
         for rc in rc_list:
-            ver = str(rc.get("version", ""))
+            ver = str(rc.get("version", "") or "").strip()
             rc_id = rc.get("rc")
-            if safe_version and (safe_version in ver or ver in safe_version):
-                try:
-                    return int(rc_id), f"Найден RC: {ver} (rc_id={rc_id})"
-                except Exception:
-                    return None, f"Найден RC {ver}, но rc_id некорректен: {rc_id}"
-        versions_found = [str(r.get("version", "?")) for r in rc_list[:10]]
-        return None, f"RC с версией «{safe_version}» не найден. Доступные: {', '.join(versions_found)}"
+            if not ver or rc_id is None:
+                continue
+            # Prefer strict equality when possible; fall back to containment for alias-like versions.
+            if safe_version == ver or (safe_version and (safe_version in ver or ver in safe_version)):
+                matches.append((ver, rc_id))
+
+        if not matches:
+            versions_found = [str(r.get("version", "?")) for r in rc_list[:10]]
+            return None, f"RC с версией «{safe_version}» не найден. Доступные: {', '.join(versions_found)}"
+
+        if len(matches) > 1:
+            sample = ", ".join(f"{v}(rc_id={rid})" for v, rid in matches[:5])
+            return None, (
+                f"Найдено несколько RC под версию «{safe_version}» для {rao_name} — "
+                f"не запускаю (fail-closed).\n"
+                f"Совпадения: {sample}"
+            )
+
+        ver, rc_id_any = matches[0]
+        try:
+            return int(rc_id_any), f"Найден RC: {ver} (rc_id={rc_id_any})"
+        except Exception:
+            return None, f"Найден RC {ver}, но rc_id некорректен: {rc_id_any}"
 
     def get_rc_stages(self, rc_id: int) -> Tuple[List[Dict[str, Any]], str]:
         try:

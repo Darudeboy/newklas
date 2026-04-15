@@ -1,0 +1,68 @@
+import sys
+
+
+sys.path.insert(0, "/Users/asklimenko/Downloads/agent/newui")
+
+
+from core.dpm_client import DpmClient
+
+
+class FakeDpm(DpmClient):
+    def __init__(self, *, raos, rc_ids):
+        # Do not call parent __init__ (no env / no session needed).
+        self._raos = raos
+        self._rc_ids = rc_ids
+
+    def get_rao_list(self, fss_id: int):
+        return self._raos
+
+    def get_rc_ids(self, rao_id: int, version_search: str = ""):
+        return self._rc_ids
+
+
+def test_extract_ci_normalizes_to_cio():
+    issue = {"fields": {"summary": "Релиз HumanSmartProfile(8553253)"}}
+    assert DpmClient.extract_ci_from_release(issue) == "CIO8553253"
+
+    issue2 = {"fields": {"summary": "CI08553253"}}
+    assert DpmClient.extract_ci_from_release(issue2) == "CIO8553253"
+
+    issue3 = {"fields": {"summary": "CIO8553253"}}
+    assert DpmClient.extract_ci_from_release(issue3) == "CIO8553253"
+
+
+def test_find_rc_for_service_fail_closed_on_multiple_matches():
+    dpm = FakeDpm(
+        raos=[{"id": 1, "name": "rao"}],
+        rc_ids=[
+            {"rc": 10, "version": "D-01.007.00_674"},
+            {"rc": 11, "version": "D-01.007.00_674"},
+        ],
+    )
+    rc_id, msg = dpm.find_rc_for_service(123, "D-01.007.00_674")
+    assert rc_id is None
+    assert "несколько rc" in msg.lower()
+
+
+def test_find_rc_for_service_returns_single_match():
+    dpm = FakeDpm(
+        raos=[{"id": 1, "name": "rao"}],
+        rc_ids=[
+            {"rc": 10, "version": "D-01.007.00_674"},
+            {"rc": 99, "version": "D-01.006.00_270"},
+        ],
+    )
+    rc_id, msg = dpm.find_rc_for_service(123, "D-01.007.00_674")
+    assert rc_id == 10
+    assert "Найден RC" in msg
+
+
+def test_find_rc_for_service_no_matches():
+    dpm = FakeDpm(
+        raos=[{"id": 1, "name": "rao"}],
+        rc_ids=[{"rc": 99, "version": "D-01.006.00_270"}],
+    )
+    rc_id, msg = dpm.find_rc_for_service(123, "D-01.007.00_674")
+    assert rc_id is None
+    assert "не найден" in msg.lower()
+

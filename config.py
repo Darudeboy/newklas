@@ -49,6 +49,19 @@ TEAM_NAME = os.getenv("TEAM_NAME", "Команда")
 RELEASE_FLOW_HOTFIX_PROJECTS = os.getenv("RELEASE_FLOW_HOTFIX_PROJECTS", "HOTFIX,HF")
 RELEASE_FLOW_PROFILE_OVERRIDES = os.getenv("RELEASE_FLOW_PROFILE_OVERRIDES", "")
 
+# DPM (Deploy Pipeline Manager)
+# Для совместимости поддерживаем оба названия переменной URL:
+# - DPM_BASE_URL (новое)
+# - DPM_URL (старое)
+DPM_BASE_URL = os.getenv("DPM_BASE_URL", "") or os.getenv("DPM_URL", "")
+DPM_TOKEN = os.getenv("DPM_TOKEN", "")
+DPM_VERIFY_SSL = os.getenv("DPM_VERIFY_SSL", "0").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
 # GigaChat (Sber HR IFT) — опционально для чата в UI
 # GIGACHAT_USERNAME / GIGACHAT_PASSWORD — обязательны для вызова API
 # Остальное можно переопределить при смене стенда
