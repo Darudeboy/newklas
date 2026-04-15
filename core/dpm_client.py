@@ -312,6 +312,32 @@ class DpmClient:
                     continue
         return None
 
+    @staticmethod
+    def _extract_services_from_front_html(html: str) -> List[str]:
+        """
+        Best-effort extraction of service names from the DPM front HTML.
+
+        DPM UI часто загружает данные динамически, но иногда в HTML/inline state
+        уже присутствуют строки с именами микросервисов (например `app-...`).
+        Это не гарантируется, поэтому метод делает только эвристику.
+        """
+        text = html or ""
+        # Most useful stable signal in screenshots/UI: service names like "app-human-smart-profile".
+        candidates = re.findall(r"\bapp-[a-z0-9-]{3,}\b", text, flags=re.IGNORECASE)
+        # Normalize and keep order.
+        seen: set[str] = set()
+        out: list[str] = []
+        for c in candidates:
+            v = c.strip()
+            if not v:
+                continue
+            v_norm = v.lower()
+            if v_norm in seen:
+                continue
+            seen.add(v_norm)
+            out.append(v_norm)
+        return out
+
     def _get_front_page_html(self, app_key: str) -> str:
         front_url = f"{self.url}/dpm/front/main/key/{app_key}"
         resp = self._session.get(
@@ -552,6 +578,14 @@ class DpmClient:
             )
         app_id = self._extract_app_id_from_front_html(html, app_key)
         if app_id is None:
+            services = self._extract_services_from_front_html(html)
+            if services:
+                preview = "\n".join(f"  - {s}" for s in services[:40])
+                more = f"\n  ... и ещё {len(services) - 40}" if len(services) > 40 else ""
+                return None, (
+                    f"Приложение по ключу {app_key} открыто, но id приложения не удалось извлечь из front-страницы.\n"
+                    f"Зато нашёл возможные сервисы в HTML (эвристика):\n{preview}{more}"
+                )
             return None, (
                 f"Приложение по ключу {app_key} открыто, но id приложения "
                 "не удалось извлечь из front-страницы."

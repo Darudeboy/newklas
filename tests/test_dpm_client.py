@@ -55,6 +55,12 @@ def test_extract_app_id_from_front_html():
     assert DpmClient._extract_app_id_from_front_html("<html></html>", "HRP") is None
 
 
+def test_extract_services_from_front_html():
+    html = "<div>app-human-smart-profile</div><div>app-human-smart-profile-sync</div>"
+    services = DpmClient._extract_services_from_front_html(html)
+    assert "app-human-smart-profile" in services
+    assert "app-human-smart-profile-sync" in services
+
 def test_build_auth_headers_accepts_bearer_and_raw_token():
     h1 = DpmClient._build_auth_headers("abc.def.ghi")
     assert h1["Authorization"] == "Bearer abc.def.ghi"
