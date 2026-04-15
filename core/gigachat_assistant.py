@@ -113,13 +113,16 @@ class GigaChatAssistant:
             if snapshot and snapshot.get("release_key"):
                 ctx = f"Ключ релиза в snapshot: {snapshot.get('release_key')}\n" + ctx
             user_block = f"Контекст проверки:\n{ctx}\n\nВопрос: {q}"
-            ok, text = self._client.complete(
-                [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_block[:14000]},
-                ],
-                temperature=0.12,
-            )
+            try:
+                ok, text = self._client.complete(
+                    [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": user_block[:14000]},
+                    ],
+                    temperature=0.12,
+                )
+            except Exception as e:
+                ok, text = False, str(e)
             if ok and text:
                 return text
             fallback = explain.answer(q, snapshot=snapshot, result=result)
@@ -164,14 +167,17 @@ class GigaChatAssistant:
         )
 
         # One dedicated JSON extraction call.
-        ok, text = self._client.complete(
-            [
-                {"role": "system", "content": COMMAND_INTENT_SYSTEM_PROMPT},
-                {"role": "user", "content": user_block[:6000]},
-            ],
-            temperature=0.0,
-            timeout=25,
-        )
+        try:
+            ok, text = self._client.complete(
+                [
+                    {"role": "system", "content": COMMAND_INTENT_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_block[:6000]},
+                ],
+                temperature=0.0,
+                timeout=25,
+            )
+        except Exception:
+            return None
         if not ok or not text:
             return None
 
