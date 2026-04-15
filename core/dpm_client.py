@@ -15,6 +15,7 @@ import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+import urllib3
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -189,7 +190,12 @@ class DpmClient:
         self.url = self._normalize_base_url(self._raw_url)
         self.front_app_key = self._extract_front_app_key(self._raw_url)
         self.token = token or DPM_TOKEN
-        self.verify_ssl = verify_ssl if verify_ssl else DPM_VERIFY_SSL
+        # Force insecure mode for DPM SSL in this environment.
+        self.verify_ssl = False
+
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        for env_var in ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR"):
+            os.environ.pop(env_var, None)
 
         if not self.url:
             logger.warning("DPM_URL не настроен — интеграция с DPM недоступна")
