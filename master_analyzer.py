@@ -167,7 +167,9 @@ class ConfluenceDeployPlanGenerator:
         if not space:
             return {"success": False, "message": "Не указан space_key", "details": ""}
 
-        page_title = f"[{rk}] Deploy plan"
+        # Title must be derived from the Jira release summary (Russian), per expected naming convention.
+        # Only the page title is changed; the page body/template merge remains untouched.
+        page_title = f"Deploy план {summary_raw}".strip()
 
         release_date_iso = extract_release_date_iso(summary_raw)
         release_date_human = format_ru_date(release_date_iso) if release_date_iso else ""
