@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 import urllib3
 from requests.adapters import HTTPAdapter
+from requests.utils import get_environ_proxies, should_bypass_proxies
 from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,57 @@ class GigaChatClient:
         # Default: trust environment (safer for corporate networks).
         return True
 
+    def _effective_proxies_for_url(self, url: str) -> Dict[str, str]:
+        """
+        Return proxies that will be used for the given URL.
+        Supports explicit overrides via:
+        - GIGACHAT_HTTPS_PROXY / GIGACHAT_HTTP_PROXY
+        - GIGACHAT_NO_PROXY
+        If overrides are not set, falls back to standard env proxy discovery (when trust_env=True).
+        """
+        overrides: Dict[str, str] = {}
+        https_p = (os.getenv("GIGACHAT_HTTPS_PROXY", "") or "").strip()
+        http_p = (os.getenv("GIGACHAT_HTTP_PROXY", "") or "").strip()
+        no_p = (os.getenv("GIGACHAT_NO_PROXY", "") or "").strip()
+        if https_p:
+            overrides["https"] = https_p
+        if http_p:
+            overrides["http"] = http_p
+        # requests honors NO_PROXY via environment; we keep it compatible by copying into process env
+        # when user provided GIGACHAT_NO_PROXY.
+        if no_p:
+            os.environ["NO_PROXY"] = no_p
+            os.environ["no_proxy"] = no_p
+        if overrides:
+            return overrides
+        if not self._should_trust_env_proxies():
+            return {}
+        try:
+            return dict(get_environ_proxies(url))
+        except Exception:
+            return {}
+
+    def _proxy_debug_hint(self, url: str) -> str:
+        trust = self._should_trust_env_proxies()
+        proxies = self._effective_proxies_for_url(url)
+        no_proxy = os.getenv("NO_PROXY") or os.getenv("no_proxy") or ""
+        bypass = False
+        try:
+            bypass = should_bypass_proxies(url, no_proxy=no_proxy) if trust else True
+        except Exception:
+            bypass = False
+        # Keep the hint short; we only need enough to see whether a proxy is involved.
+        https_p = proxies.get("https") or ""
+        http_p = proxies.get("http") or ""
+        parts = [
+            f"trust_env={'True' if trust else 'False'}",
+            f"proxy_https={'set' if bool(https_p) else 'empty'}",
+            f"proxy_http={'set' if bool(http_p) else 'empty'}",
+            f"no_proxy={'set' if bool(no_proxy.strip()) else 'empty'}",
+            f"bypass={'True' if bypass else 'False'}",
+        ]
+        return ", ".join(parts)
+
     def _ensure_token(self) -> Tuple[bool, str]:
         if self._access_token and time.time() < self._token_expires_at:
             return True, ""
@@ -128,20 +180,21 @@ class GigaChatClient:
             s.mount("https://", HTTPAdapter(max_retries=retry))
             s.mount("http://", HTTPAdapter(max_retries=retry))
             s.trust_env = self._should_trust_env_proxies()
+            proxies = self._effective_proxies_for_url(self.token_url)
             r = s.post(
                 self.token_url,
                 data=payload,
                 headers=headers,
                 cookies=cookies,
+                proxies=proxies or None,
                 verify=self.verify_ssl,
                 timeout=60,
             )
         except Exception as e:
             logger.exception("GigaChat token request failed")
-            proxy_hint = "trust_env=True" if self._should_trust_env_proxies() else "trust_env=False"
-            return False, f"{e} ({proxy_hint})"
+            return False, f"{e} ({self._proxy_debug_hint(self.token_url)})"
         if r.status_code != 200:
-            return False, f"token HTTP {r.status_code}: {(r.text or '')[:300]}"
+            return False, f"token HTTP {r.status_code}: {(r.text or '')[:300]} ({self._proxy_debug_hint(self.token_url)})"
         try:
             data = r.json()
         except Exception:
@@ -185,19 +238,20 @@ class GigaChatClient:
         try:
             s = requests.Session()
             s.trust_env = self._should_trust_env_proxies()
+            proxies = self._effective_proxies_for_url(self.api_url)
             r = s.post(
                 self.api_url,
                 headers=headers,
                 json=payload,
+                proxies=proxies or None,
                 verify=self.verify_ssl,
                 timeout=timeout,
             )
         except Exception as e:
             logger.exception("GigaChat completion failed")
-            proxy_hint = "trust_env=True" if self._should_trust_env_proxies() else "trust_env=False"
-            return False, f"{e} ({proxy_hint})"
+            return False, f"{e} ({self._proxy_debug_hint(self.api_url)})"
         if r.status_code != 200:
-            return False, f"HTTP {r.status_code}: {(r.text or '')[:500]}"
+            return False, f"HTTP {r.status_code}: {(r.text or '')[:500]} ({self._proxy_debug_hint(self.api_url)})"
         try:
             data = r.json()
         except Exception:
