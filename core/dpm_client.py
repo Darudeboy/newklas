@@ -217,7 +217,9 @@ class DpmClient:
         token: str = "",
         verify_ssl: bool = False,
     ) -> None:
-        self.url = self._normalize_base_url(url or DPM_URL)
+        self._raw_url = (url or DPM_URL).strip()
+        self.url = self._normalize_base_url(self._raw_url)
+        self.front_app_key = self._extract_front_app_key(self._raw_url)
         self.token = token or DPM_TOKEN
         self.verify_ssl = verify_ssl if verify_ssl else DPM_VERIFY_SSL
 
@@ -261,6 +263,21 @@ class DpmClient:
             return v
         host = m.group(1)
         return host
+
+    @staticmethod
+    def _extract_front_app_key(raw_url: str) -> Optional[str]:
+        """
+        Extract app key from frontend URL:
+        https://host/dpm/front/main/key/HRP -> HRP
+        """
+        v = (raw_url or "").strip()
+        if not v:
+            return None
+        m = re.search(r"/dpm/front/main/key/([^/?#]+)", v, re.IGNORECASE)
+        if not m:
+            return None
+        key = (m.group(1) or "").strip().upper()
+        return key or None
 
     @property
     def enabled(self) -> bool:
@@ -514,6 +531,21 @@ class DpmClient:
         safe_ci = (ci_number or "").strip()
         if not safe_ci:
             return None, "Не указан номер КЭ (CI)."
+
+        # Preferred route: if front URL contains app key (/key/HRP), resolve app by this key first.
+        # This mirrors how users navigate in DPM UI and avoids relying on CI as entity key.
+        if self.front_app_key:
+            try:
+                by_url = self.entity_by_key(self.front_app_key)
+                if by_url and by_url.get("id"):
+                    etype = by_url.get("type", by_url.get("__typename", "")) or ""
+                    if "AutomatedSystem" in etype:
+                        return by_url, (
+                            f"Найдено приложение по ключу из URL: {self.front_app_key} "
+                            f"(id={by_url['id']}); далее проверяем КЭ на уровне сервисов/релизов."
+                        )
+            except Exception as e:
+                logger.debug("entityByKey(front key=%s) failed: %s", self.front_app_key, e)
 
         candidates: List[str] = []
         candidates.append(safe_ci)

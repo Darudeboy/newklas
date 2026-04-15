@@ -39,6 +39,12 @@ def test_normalize_base_url_from_frontend_link():
     assert DpmClient._normalize_base_url(raw2) == "https://sbrf-dpm.sigma.sbrf.ru"
 
 
+def test_extract_front_app_key():
+    raw = "https://sbrf-dpm.sigma.sbrf.ru/dpm/front/main/key/HRP"
+    assert DpmClient._extract_front_app_key(raw) == "HRP"
+    assert DpmClient._extract_front_app_key("https://sbrf-dpm.sigma.sbrf.ru") is None
+
+
 def test_build_auth_headers_accepts_bearer_and_raw_token():
     h1 = DpmClient._build_auth_headers("abc.def.ghi")
     assert h1["Authorization"] == "Bearer abc.def.ghi"
