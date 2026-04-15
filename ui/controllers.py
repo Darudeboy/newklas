@@ -19,6 +19,7 @@ from config import (
     CONFLUENCE_URL,
     TEAM_NAME,
 )
+from core.dpm_client import DpmClient
 from core.jira_client import JiraService
 from core.orchestrator import format_release_gate_report, run_release_check
 from core.snapshot_builder import build_release_snapshot
@@ -72,6 +73,7 @@ class AppController:
         self._form_get_profile: Callable[[], str] = lambda: "auto"
 
         self._init_master_analyzer()
+        self._init_dpm_client()
         self.current_analysis: Optional[Dict[str, Any]] = None
         self._output_lines: list[str] = []
 
@@ -101,6 +103,17 @@ class AppController:
             logger.error("Ошибка инициализации Confluence/Master analyzer: %s", e)
             self.confluence_generator = None
             self.master_analyzer = None
+
+    def _init_dpm_client(self) -> None:
+        try:
+            self.dpm_client = DpmClient()
+            if self.dpm_client.enabled:
+                logger.info("DPM клиент инициализирован (URL: %s)", self.dpm_client.url)
+            else:
+                logger.info("DPM не настроен (DPM_URL / DPM_TOKEN не указаны в .env)")
+        except Exception as e:
+            logger.error("Ошибка инициализации DPM: %s", e)
+            self.dpm_client = None
 
     def get_context(self) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         return self.state.last_snapshot, self.state.last_result
@@ -1300,3 +1313,247 @@ class AppController:
                 self._ui_set_status("Ошибка", "#C62828")
 
         threading.Thread(target=worker, daemon=True).start()
+
+    # ──────────────────────────────────────
+    #  DPM: раскатка на стенды ИФТ / ПСИ
+    # ──────────────────────────────────────
+    def _resolve_dpm_params(self, release_key: str) -> Tuple[Optional[str], Optional[str], str]:
+        """
+        Извлекает КЭ (CIO...) и версию релиза из JIRA-задачи релиза.
+        """
+        snapshot = self.state.last_snapshot or {}
+        release_issue = snapshot.get("release_issue") or {}
+
+        snap_key = (snapshot.get("release_key") or "").upper()
+        if snap_key != release_key.upper() or not release_issue:
+            fresh = self.jira_service.get_issue_details(
+                release_key, expand="issuelinks,renderedFields,names"
+            )
+            if fresh:
+                release_issue = fresh
+
+        if not release_issue:
+            return None, None, f"Не удалось получить данные релиза {release_key} из JIRA."
+
+        ci_number = DpmClient.extract_ci_from_release(release_issue)
+        version = DpmClient.extract_version_from_release(release_issue)
+
+        if not ci_number:
+            return None, None, (
+                f"Не удалось извлечь КЭ (CIO...) из релиза {release_key}. "
+                f"Проверь, что в задаче заполнено поле КЭ."
+            )
+        if not version:
+            return None, None, (
+                f"Не удалось извлечь версию релиза из {release_key}. "
+                f"Проверь fixVersions или summary задачи."
+            )
+
+        return ci_number, version, f"КЭ: {ci_number}, версия: {version}"
+
+    def _show_service_chooser(
+        self,
+        services: list,
+        target_stage: str,
+    ) -> Optional[dict]:
+        """
+        Показать модальный диалог выбора микросервиса (только из главного потока Tk).
+        """
+        from ui.forms import DpmServiceChooser
+
+        root = None
+        try:
+            root = self._ui_set_status.__self__  # type: ignore[attr-defined]
+        except Exception:
+            root = None
+
+        chooser = DpmServiceChooser(
+            root,
+            services=services,
+            target_stage=target_stage,
+            format_name_fn=DpmClient.format_service_name,
+            get_key_fn=lambda svc: str(DpmClient.get_service_id(svc) or ""),
+        )
+        chooser.wait_window()
+        return chooser.result
+
+    def dpm_deploy(
+        self,
+        *,
+        release_key: str,
+        target_stage: str,
+        dry_run: bool = False,
+    ) -> None:
+        safe_release = (release_key or "").strip().upper()
+        if not safe_release:
+            self._ui_show_error("Ошибка", "Введите ключ релиза.")
+            return
+        if not getattr(self, "dpm_client", None) or not self.dpm_client or not self.dpm_client.enabled:
+            self._ui_show_error("DPM не настроен", "DPM_URL и DPM_TOKEN должны быть указаны в .env.")
+            return
+
+        safe_stage = (target_stage or "").strip().upper()
+        self._ui_set_status(f"DPM {safe_stage}…", "#1565C0")
+        self._reset_output(f"🚀 Раскатка на {safe_stage} через DPM — {safe_release}")
+
+        def fetch_services_worker():
+            try:
+                self._append_output("Извлекаю КЭ и версию из JIRA…")
+                ci_number, version, resolve_msg = self._resolve_dpm_params(safe_release)
+                self._append_output(resolve_msg)
+                if not ci_number or not version:
+                    self._ui_set_status("Ошибка", "#C62828")
+                    return
+
+                self._append_output(f"Поиск приложения в DPM по КЭ={ci_number}…")
+                app, app_msg = self.dpm_client.find_app_by_ci(ci_number)
+                self._append_output(app_msg)
+                if not app:
+                    self._ui_set_status("Ошибка", "#C62828")
+                    return
+
+                app_id = app.get("id")
+                if not app_id:
+                    self._append_output("Не удалось получить id приложения.")
+                    self._ui_set_status("Ошибка", "#C62828")
+                    return
+
+                self._append_output(f"Запрос микросервисов (FSS) для приложения id={app_id}…")
+                services, svc_msg = self.dpm_client.list_services(int(app_id))
+                self._append_output(svc_msg)
+                if not services:
+                    self._ui_set_status("Ошибка", "#C62828")
+                    return
+
+                def on_main_choose():
+                    chosen = self._show_service_chooser(services, safe_stage)
+                    if chosen is None:
+                        self._append_output("Отменено пользователем.")
+                        self._ui_set_status("Отменено", "#616161")
+                        return
+
+                    fss_id = DpmClient.get_service_id(chosen)
+                    svc_name = DpmClient.format_service_name(chosen)
+                    self._append_output(f"Выбран: {svc_name} (fss_id={fss_id})")
+                    if fss_id is None:
+                        self._append_output("Не удалось получить id микросервиса.")
+                        self._ui_set_status("Ошибка", "#C62828")
+                        return
+
+                    if not dry_run:
+                        ok = self._ui_ask_yes_no(
+                            f"Раскатка на {safe_stage}",
+                            f"Запустить раскатку на {safe_stage}?\n\n"
+                            f"Релиз: {safe_release}\n"
+                            f"КЭ: {ci_number}\n"
+                            f"Версия: {version}\n"
+                            f"Микросервис: {svc_name}\n\n"
+                            f"Раскатка строго по КЭ — чужие сервисы не будут затронуты.",
+                        )
+                        if not ok:
+                            self._append_output("Отменено пользователем.")
+                            self._ui_set_status("Отменено", "#616161")
+                            return
+
+                    def deploy_worker():
+                        try:
+                            self._append_output(f"Поиск конвейера: fss_id={fss_id}, версия={version}…")
+                            ok_deploy, msg = self.dpm_client.deploy_service_to_stage(
+                                fss_id=fss_id,
+                                release_version=version,
+                                target_stage=safe_stage,
+                                dry_run=dry_run,
+                            )
+                            for line in msg.split("\n"):
+                                self._append_output(line)
+                            if ok_deploy:
+                                self._ui_set_status(f"Готово ({safe_stage})", "#2E7D32")
+                            else:
+                                self._ui_set_status("Ошибка DPM", "#C62828")
+                        except Exception as e:
+                            self._append_output(f"❌ Ошибка DPM: {e}")
+                            self._ui_set_status("Ошибка DPM", "#C62828")
+
+                    threading.Thread(target=deploy_worker, daemon=True).start()
+
+                self._schedule_main(on_main_choose)
+            except Exception as e:
+                self._append_output(f"❌ Ошибка DPM: {e}")
+                self._ui_set_status("Ошибка DPM", "#C62828")
+
+        threading.Thread(target=fetch_services_worker, daemon=True).start()
+
+    def dpm_status(self, *, release_key: str) -> None:
+        safe_release = (release_key or "").strip().upper()
+        if not safe_release:
+            self._ui_show_error("Ошибка", "Введите ключ релиза.")
+            return
+        if not getattr(self, "dpm_client", None) or not self.dpm_client or not self.dpm_client.enabled:
+            self._ui_show_error("DPM не настроен", "DPM_URL и DPM_TOKEN должны быть указаны в .env.")
+            return
+
+        self._ui_set_status("DPM статус…", "#1565C0")
+        self._reset_output(f"📊 Статус конвейера DPM — {safe_release}")
+
+        def fetch_worker():
+            try:
+                self._append_output("Извлекаю КЭ и версию из JIRA…")
+                ci_number, version, resolve_msg = self._resolve_dpm_params(safe_release)
+                self._append_output(resolve_msg)
+                if not ci_number or not version:
+                    self._ui_set_status("Ошибка", "#C62828")
+                    return
+
+                self._append_output(f"Поиск приложения в DPM по КЭ={ci_number}…")
+                app, app_msg = self.dpm_client.find_app_by_ci(ci_number)
+                self._append_output(app_msg)
+                if not app:
+                    self._ui_set_status("Ошибка", "#C62828")
+                    return
+
+                app_id = app.get("id")
+                if not app_id:
+                    self._append_output("Не удалось получить id приложения.")
+                    self._ui_set_status("Ошибка", "#C62828")
+                    return
+
+                self._append_output(f"Запрос микросервисов (FSS) для приложения id={app_id}…")
+                services, svc_msg = self.dpm_client.list_services(int(app_id))
+                self._append_output(svc_msg)
+                if not services:
+                    self._ui_set_status("Ошибка", "#C62828")
+                    return
+
+                def on_main_choose():
+                    chosen = self._show_service_chooser(services, "статус")
+                    if chosen is None:
+                        self._append_output("Отменено пользователем.")
+                        self._ui_set_status("Отменено", "#616161")
+                        return
+
+                    fss_id = DpmClient.get_service_id(chosen)
+                    svc_name = DpmClient.format_service_name(chosen)
+                    self._append_output(f"Выбран: {svc_name} (fss_id={fss_id})")
+                    if fss_id is None:
+                        self._append_output("Не удалось получить id микросервиса.")
+                        self._ui_set_status("Ошибка", "#C62828")
+                        return
+
+                    def status_worker():
+                        try:
+                            ok, msg = self.dpm_client.get_status_for_service_release(fss_id, version)
+                            for line in msg.split("\n"):
+                                self._append_output(line)
+                            self._ui_set_status("Готово", "#2E7D32" if ok else "#C62828")
+                        except Exception as e:
+                            self._append_output(f"❌ Ошибка DPM: {e}")
+                            self._ui_set_status("Ошибка DPM", "#C62828")
+
+                    threading.Thread(target=status_worker, daemon=True).start()
+
+                self._schedule_main(on_main_choose)
+            except Exception as e:
+                self._append_output(f"❌ Ошибка DPM: {e}")
+                self._ui_set_status("Ошибка DPM", "#C62828")
+
+        threading.Thread(target=fetch_worker, daemon=True).start()

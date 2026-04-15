@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, Optional
+
 import customtkinter as ctk
 
 from ui.styles import font
@@ -135,6 +137,39 @@ class MainFormPanel(ctk.CTkFrame):
             side="right", padx=6, pady=6
         )
 
+        # DPM: раскатка на стенды ИФТ / ПСИ
+        dpm_row = ctk.CTkFrame(self)
+        dpm_row.pack(fill="x", padx=16, pady=(0, 12))
+
+        ctk.CTkLabel(dpm_row, text="DPM", font=font(13, weight="bold"), width=40).pack(
+            side="left", padx=(6, 2)
+        )
+        ctk.CTkButton(
+            dpm_row,
+            text="Раскатка ИФТ",
+            command=self._dpm_deploy_ift,
+            fg_color="#1565C0",
+            hover_color="#0D47A1",
+            text_color="#FFFFFF",
+        ).pack(side="left", padx=6, pady=6)
+        ctk.CTkButton(
+            dpm_row,
+            text="Раскатка ПСИ",
+            command=self._dpm_deploy_psi,
+            fg_color="#2E7D32",
+            hover_color="#1B5E20",
+            text_color="#FFFFFF",
+        ).pack(side="left", padx=6, pady=6)
+        ctk.CTkButton(
+            dpm_row,
+            text="DPM статус",
+            command=self._dpm_status,
+            fg_color="#455A64",
+            hover_color="#37474F",
+            text_color="#FFFFFF",
+            width=100,
+        ).pack(side="left", padx=6, pady=6)
+
     def get_release_key(self) -> str:
         return (self.release_key.get() or "").strip().upper()
 
@@ -238,4 +273,113 @@ class MainFormPanel(ctk.CTkFrame):
             project_key=self.get_project_key(),
             fix_version=self.get_fix_version(),
         )
+
+    def _dpm_deploy_ift(self) -> None:
+        self.controller.dpm_deploy(
+            release_key=self.get_release_key(),
+            target_stage="ИФТ",
+            dry_run=self.is_dry_run(),
+        )
+
+    def _dpm_deploy_psi(self) -> None:
+        self.controller.dpm_deploy(
+            release_key=self.get_release_key(),
+            target_stage="ПСИ",
+            dry_run=self.is_dry_run(),
+        )
+
+    def _dpm_status(self) -> None:
+        self.controller.dpm_status(release_key=self.get_release_key())
+
+
+class DpmServiceChooser(ctk.CTkToplevel):
+    """
+    Модальное окно выбора микросервиса для раскатки через DPM.
+    """
+
+    def __init__(
+        self,
+        master,
+        *,
+        services: list[dict[str, Any]],
+        target_stage: str,
+        format_name_fn,
+        get_key_fn,
+        title: str = "Выбор микросервиса",
+    ):
+        super().__init__(master)
+        self.title(title)
+        self.geometry("520x400")
+        self.resizable(False, True)
+        self.grab_set()
+        self.lift()
+
+        self.result: Optional[dict[str, Any]] = None
+        self._format_name = format_name_fn
+        self._get_key = get_key_fn
+        self._services = services
+        self._selected = ctk.StringVar(value="")
+
+        hdr = ctk.CTkLabel(
+            self,
+            text=f"Выберите микросервис для раскатки на {target_stage}:",
+            font=font(15, weight="bold"),
+            wraplength=480,
+        )
+        hdr.pack(padx=16, pady=(16, 8), anchor="w")
+
+        scroll = ctk.CTkScrollableFrame(self, width=480, height=240)
+        scroll.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+
+        for i, svc in enumerate(services):
+            display = self._format_name(svc)
+            rb = ctk.CTkRadioButton(
+                scroll,
+                text=display,
+                variable=self._selected,
+                value=str(i),
+                font=font(13),
+            )
+            rb.pack(anchor="w", padx=8, pady=4)
+
+        if len(services) == 1:
+            self._selected.set("0")
+
+        btn_row = ctk.CTkFrame(self, fg_color="transparent")
+        btn_row.pack(fill="x", padx=16, pady=(0, 16))
+
+        ctk.CTkButton(
+            btn_row,
+            text=f"Раскатить на {target_stage}",
+            command=self._on_ok,
+            fg_color="#1565C0" if target_stage == "ИФТ" else "#2E7D32",
+            hover_color="#0D47A1" if target_stage == "ИФТ" else "#1B5E20",
+            text_color="#FFFFFF",
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            btn_row,
+            text="Отмена",
+            command=self._on_cancel,
+            fg_color="#616161",
+            hover_color="#424242",
+            text_color="#FFFFFF",
+        ).pack(side="left")
+
+        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+    def _on_ok(self) -> None:
+        idx_str = self._selected.get()
+        if not idx_str:
+            return
+        idx = int(idx_str)
+        if 0 <= idx < len(self._services):
+            self.result = self._services[idx]
+        self.grab_release()
+        self.destroy()
+
+    def _on_cancel(self) -> None:
+        self.result = None
+        self.grab_release()
+        self.destroy()
 
