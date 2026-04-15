@@ -217,7 +217,7 @@ class DpmClient:
         token: str = "",
         verify_ssl: bool = False,
     ) -> None:
-        self.url = (url or DPM_URL).rstrip("/")
+        self.url = self._normalize_base_url(url or DPM_URL)
         self.token = token or DPM_TOKEN
         self.verify_ssl = verify_ssl if verify_ssl else DPM_VERIFY_SSL
 
@@ -238,6 +238,29 @@ class DpmClient:
         )
         self._session.mount("https://", HTTPAdapter(max_retries=retry))
         self._session.mount("http://", HTTPAdapter(max_retries=retry))
+
+    @staticmethod
+    def _normalize_base_url(raw_url: str) -> str:
+        """
+        Normalize user-provided DPM URL to API host base.
+
+        Users often copy URL from browser:
+          https://host/dpm/front/main/key/HRP
+        but GraphQL endpoint requires:
+          https://host/dpm/auth/dpm/graphql/{operation}
+        so base must be just:
+          https://host
+        """
+        v = (raw_url or "").strip()
+        if not v:
+            return ""
+        v = v.rstrip("/")
+        # Strip known frontend path tail if present.
+        m = re.match(r"^(https?://[^/]+)(/.*)?$", v, re.IGNORECASE)
+        if not m:
+            return v
+        host = m.group(1)
+        return host
 
     @property
     def enabled(self) -> bool:

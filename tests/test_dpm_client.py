@@ -31,6 +31,14 @@ def test_extract_ci_normalizes_to_cio():
     assert DpmClient.extract_ci_from_release(issue3) == "CIO8553253"
 
 
+def test_normalize_base_url_from_frontend_link():
+    raw = "https://sbrf-dpm.sigma.sbrf.ru/dpm/front/main/key/HRP"
+    assert DpmClient._normalize_base_url(raw) == "https://sbrf-dpm.sigma.sbrf.ru"
+
+    raw2 = "https://sbrf-dpm.sigma.sbrf.ru"
+    assert DpmClient._normalize_base_url(raw2) == "https://sbrf-dpm.sigma.sbrf.ru"
+
+
 def test_find_rc_for_service_fail_closed_on_multiple_matches():
     dpm = FakeDpm(
         raos=[{"id": 1, "name": "rao"}],
