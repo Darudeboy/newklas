@@ -45,6 +45,16 @@ def test_extract_front_app_key():
     assert DpmClient._extract_front_app_key("https://sbrf-dpm.sigma.sbrf.ru") is None
 
 
+def test_extract_app_id_from_front_html():
+    html = '<html><script>window.__STATE__={"asId":394295,"key":"HRP"}</script></html>'
+    assert DpmClient._extract_app_id_from_front_html(html, "HRP") == 394295
+
+    html2 = '<div data-as-id="12345"></div>'
+    assert DpmClient._extract_app_id_from_front_html(html2, "HRP") == 12345
+
+    assert DpmClient._extract_app_id_from_front_html("<html></html>", "HRP") is None
+
+
 def test_build_auth_headers_accepts_bearer_and_raw_token():
     h1 = DpmClient._build_auth_headers("abc.def.ghi")
     assert h1["Authorization"] == "Bearer abc.def.ghi"

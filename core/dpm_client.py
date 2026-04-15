@@ -43,38 +43,6 @@ ALLOWED_STAGES = {"ИФТ", "ПСИ"}
 # GraphQL запросы (восстановлены из DevTools)
 # ────────────────────────────────────────────────────────────────
 
-GQL_ENTITY_BY_KEY = """
-query entityByKey($key: String) {
-  entityByKey(key: $key) {
-    id
-    key
-    type
-    __typename
-    ... on AutomatedSystem {
-      multiApp { id key __typename }
-      __typename
-    }
-    ... on FunctionalSubSystem {
-      automatedSystem { id key __typename }
-      __typename
-    }
-    ... on ReleaseActivityObject {
-      isWithoutSync
-      functionalSubSystem {
-        id key
-        automatedSystem { id key __typename }
-        __typename
-      }
-      __typename
-    }
-    ... on MultiApp {
-      automatedSystem { id key __typename }
-      __typename
-    }
-  }
-}
-"""
-
 GQL_FSS_VIEW_LIST = """
 query FSSViewList($page: Page!, $filterName: String, $asId: BigInteger!,
                   $isFavorite: Boolean, $sorter: Sorter) {
@@ -304,15 +272,50 @@ class DpmClient:
         return {"Authorization": f"Bearer {t}"}
 
     def _headers(self) -> Dict[str, str]:
+        referer_key = self.front_app_key or "HRP"
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
             # Harmless but useful for gateways that check browser context.
             "Origin": self.url,
-            "Referer": f"{self.url}/dpm/front/main/key/HRP",
+            "Referer": f"{self.url}/dpm/front/main/key/{referer_key}",
         }
         headers.update(self._build_auth_headers(self.token))
         return headers
+
+    @staticmethod
+    def _extract_app_id_from_front_html(html: str, app_key: str) -> Optional[int]:
+        """
+        Best-effort parser for app id from front page HTML.
+        """
+        text = html or ""
+        key = (app_key or "").strip().upper()
+        patterns = [
+            r'"asId"\s*:\s*(\d+)',
+            r'"automatedSystemId"\s*:\s*(\d+)',
+            rf'"id"\s*:\s*(\d+)\s*,\s*"key"\s*:\s*"{re.escape(key)}"',
+            rf'"key"\s*:\s*"{re.escape(key)}"\s*,\s*"id"\s*:\s*(\d+)',
+            r'data-as-id="(\d+)"',
+        ]
+        for p in patterns:
+            m = re.search(p, text, re.IGNORECASE)
+            if m:
+                try:
+                    return int(m.group(1))
+                except Exception:
+                    continue
+        return None
+
+    def _get_front_page_html(self, app_key: str) -> str:
+        front_url = f"{self.url}/dpm/front/main/key/{app_key}"
+        resp = self._session.get(
+            front_url,
+            headers=self._headers(),
+            timeout=30,
+            verify=self.verify_ssl,
+        )
+        resp.raise_for_status()
+        return resp.text or ""
 
     def _graphql(
         self,
@@ -456,10 +459,6 @@ class DpmClient:
     # ──────────────────────────────────────
     #  GraphQL операции
     # ──────────────────────────────────────
-    def entity_by_key(self, key: str) -> Optional[Dict[str, Any]]:
-        data = self._graphql("entityByKey", GQL_ENTITY_BY_KEY, {"key": key})
-        return data.get("entityByKey")
-
     def get_fss_list(self, as_id: int) -> List[Dict[str, Any]]:
         data = self._graphql(
             "FSSViewList",
@@ -523,73 +522,37 @@ class DpmClient:
     # ──────────────────────────────────────
     def find_app_by_ci(self, ci_number: str) -> Tuple[Optional[Dict[str, Any]], str]:
         """
-        Найти приложение/объект DPM по КЭ.
-
-        На практике встречаются оба формата: `CI0...` и `CIO...`.
-        Пробуем оба варианта + исходное значение.
+        Найти приложение по front URL /dpm/front/main/key/<APP_KEY>.
+        КЭ здесь используется как безопасный контекст запуска, но поиск приложения
+        выполняется через ключ приложения из front URL.
         """
         safe_ci = (ci_number or "").strip()
         if not safe_ci:
             return None, "Не указан номер КЭ (CI)."
 
-        # Preferred route: if front URL contains app key (/key/HRP), resolve app by this key first.
-        # This mirrors how users navigate in DPM UI and avoids relying on CI as entity key.
-        if self.front_app_key:
-            try:
-                by_url = self.entity_by_key(self.front_app_key)
-                if by_url and by_url.get("id"):
-                    etype = by_url.get("type", by_url.get("__typename", "")) or ""
-                    if "AutomatedSystem" in etype:
-                        return by_url, (
-                            f"Найдено приложение по ключу из URL: {self.front_app_key} "
-                            f"(id={by_url['id']}); далее проверяем КЭ на уровне сервисов/релизов."
-                        )
-            except Exception as e:
-                logger.debug("entityByKey(front key=%s) failed: %s", self.front_app_key, e)
-
-        candidates: List[str] = []
-        candidates.append(safe_ci)
-        norm = self.extract_ci_from_release({"fields": {"summary": safe_ci}})
-        if norm and norm not in candidates:
-            candidates.append(norm)
-        digits = re.sub(r"\D", "", safe_ci)
-        if digits:
-            ci0 = f"CI0{digits}"
-            if ci0 not in candidates:
-                candidates.append(ci0)
-            cio = f"CIO{digits}"
-            if cio not in candidates:
-                candidates.append(cio)
-        if digits and digits not in candidates:
-            candidates.append(digits)
-
-        last_err: Optional[str] = None
-        for key in candidates:
-            try:
-                entity = self.entity_by_key(key)
-            except Exception as e:
-                last_err = str(e)
-                continue
-            if not entity or not entity.get("id"):
-                continue
-            etype = entity.get("type", entity.get("__typename", "")) or ""
-            ekey = entity.get("key", key)
-            if "AutomatedSystem" in etype:
-                return entity, f"Найдено приложение: {ekey} (id={entity['id']})"
-            if "FunctionalSubSystem" in etype:
-                as_info = entity.get("automatedSystem", {}) or {}
-                if as_info.get("id"):
-                    return as_info, (
-                        f"По КЭ={safe_ci} найден микросервис {ekey}. "
-                        f"Приложение: {as_info.get('key', '?')} (id={as_info['id']})"
-                    )
-                return entity, f"По КЭ={safe_ci} найден объект {ekey} (тип: {etype})"
-            return entity, f"По КЭ={safe_ci} найден объект {ekey} (тип: {etype})"
-
-        suffix = f" (последняя ошибка: {last_err})" if last_err else ""
-        return None, (
-            f"Приложение с КЭ={safe_ci} не найдено в DPM через entityByKey.{suffix}\n"
-            f"Проверь, что КЭ имеет формат CI<digits> (например CI08553253) и что токен DPM валиден."
+        app_key = self.front_app_key
+        if not app_key:
+            return None, (
+                "Не удалось определить ключ приложения из DPM_URL.\n"
+                "Укажи DPM_URL или DPM_BASE_URL в формате "
+                "https://.../dpm/front/main/key/HRP"
+            )
+        try:
+            html = self._get_front_page_html(app_key)
+        except Exception as e:
+            return None, (
+                f"Не удалось открыть front URL приложения {app_key}: {e}\n"
+                "Проверь доступ и токен."
+            )
+        app_id = self._extract_app_id_from_front_html(html, app_key)
+        if app_id is None:
+            return None, (
+                f"Приложение по ключу {app_key} открыто, но id приложения "
+                "не удалось извлечь из front-страницы."
+            )
+        return (
+            {"id": app_id, "key": app_key, "type": "AutomatedSystem"},
+            f"Найдено приложение по front URL: {app_key} (id={app_id}). КЭ контекст: {safe_ci}",
         )
 
     def list_services(self, app_id: int) -> Tuple[List[Dict[str, Any]], str]:
