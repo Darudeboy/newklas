@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 import urllib3
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
@@ -82,12 +84,15 @@ class GigaChatClient:
             return True, ""
         if not self.verify_ssl:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        # Mimic Insomnia as close as possible (some gateways are picky).
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
             "x-hrp-person-id": self.person_id,
-            "User-Agent": "newui-gigachat/1.0",
+            "User-Agent": os.getenv("GIGACHAT_TOKEN_USER_AGENT", "insomnia/8.6.1"),
             "Accept": "*/*",
+            "Connection": "close",
         }
+        cookies = {"KEYCLOAK_LOCALE": "ru"}
         payload = {
             "grant_type": "password",
             "username": self._username,
@@ -95,12 +100,28 @@ class GigaChatClient:
             "client_id": self.client_id,
         }
         try:
-            r = requests.post(
+            s = requests.Session()
+            # Retries help with flaky gateways / occasional resets.
+            retry = Retry(
+                total=3,
+                connect=3,
+                read=2,
+                status=0,
+                backoff_factor=0.5,
+                allowed_methods=frozenset(["POST"]),
+                raise_on_status=False,
+            )
+            s.mount("https://", HTTPAdapter(max_retries=retry))
+            s.mount("http://", HTTPAdapter(max_retries=retry))
+            # Avoid environment proxies unexpectedly intercepting auth.
+            s.trust_env = False
+            r = s.post(
                 self.token_url,
                 data=payload,
                 headers=headers,
+                cookies=cookies,
                 verify=self.verify_ssl,
-                timeout=30,
+                timeout=60,
             )
         except Exception as e:
             logger.exception("GigaChat token request failed")
@@ -140,6 +161,7 @@ class GigaChatClient:
             "Authorization": f"Bearer {self._access_token}",
             "Content-Type": "application/json",
             "personId": self.person_id,
+            "Connection": "close",
         }
         payload: Dict[str, Any] = {
             "model": self.model,
@@ -147,7 +169,9 @@ class GigaChatClient:
             "temperature": temperature,
         }
         try:
-            r = requests.post(
+            s = requests.Session()
+            s.trust_env = False
+            r = s.post(
                 self.api_url,
                 headers=headers,
                 json=payload,
