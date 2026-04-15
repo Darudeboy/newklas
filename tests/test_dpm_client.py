@@ -39,6 +39,24 @@ def test_normalize_base_url_from_frontend_link():
     assert DpmClient._normalize_base_url(raw2) == "https://sbrf-dpm.sigma.sbrf.ru"
 
 
+def test_build_auth_headers_accepts_bearer_and_raw_token():
+    h1 = DpmClient._build_auth_headers("abc.def.ghi")
+    assert h1["Authorization"] == "Bearer abc.def.ghi"
+
+    h2 = DpmClient._build_auth_headers("Bearer abc.def.ghi")
+    assert h2["Authorization"] == "Bearer abc.def.ghi"
+
+    h3 = DpmClient._build_auth_headers("bearer abc.def.ghi")
+    assert h3["Authorization"] == "Bearer abc.def.ghi"
+
+
+def test_build_auth_headers_cookie_mode():
+    cookie = "X-HRP-SessionLife=abc; TS016bbbe6=xyz"
+    h = DpmClient._build_auth_headers(cookie)
+    assert h.get("Cookie") == cookie
+    assert "Authorization" not in h
+
+
 def test_find_rc_for_service_fail_closed_on_multiple_matches():
     dpm = FakeDpm(
         raos=[{"id": 1, "name": "rao"}],

@@ -266,12 +266,36 @@ class DpmClient:
     def enabled(self) -> bool:
         return bool(self.url and self.token)
 
+    @staticmethod
+    def _build_auth_headers(token: str) -> Dict[str, str]:
+        """
+        Build auth headers tolerant to different token formats.
+
+        Supported input in .env:
+        - raw jwt token: "eyJ..."
+        - prefixed token: "Bearer eyJ..."
+        - cookie-style session: "X-HRP-SessionLife=...; TS...=..."
+        """
+        t = (token or "").strip()
+        if not t:
+            return {}
+        # Cookie mode: user pasted session cookies instead of bearer token.
+        if "=" in t and (";" in t or t.lower().startswith("x-hrp-sessionlife=")):
+            return {"Cookie": t}
+        if re.match(r"^bearer\s+", t, flags=re.IGNORECASE):
+            return {"Authorization": re.sub(r"^bearer\s+", "Bearer ", t, flags=re.IGNORECASE)}
+        return {"Authorization": f"Bearer {t}"}
+
     def _headers(self) -> Dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.token}",
+        headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
+            # Harmless but useful for gateways that check browser context.
+            "Origin": self.url,
+            "Referer": f"{self.url}/dpm/front/main/key/HRP",
         }
+        headers.update(self._build_auth_headers(self.token))
+        return headers
 
     def _graphql(
         self,
