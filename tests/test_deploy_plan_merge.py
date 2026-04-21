@@ -6,6 +6,7 @@ from master_analyzer import (
     extract_release_date_iso,
     format_ru_date,
     merge_deploy_plan_into_template_storage,
+    summary_suffix_for_deploy_plan_title,
 )
 
 
@@ -22,6 +23,21 @@ class DeployPlanMergeTest(unittest.TestCase):
 
     def test_format_ru_date(self):
         self.assertEqual(format_ru_date("2025-02-07"), "07 февр. 2025 г.")
+
+    def test_summary_suffix_strips_leading_release_key(self):
+        rk = "HRPRELEASE-76202"
+        raw = (
+            "HRPRELEASE-76202 - Релиз-2025-02-07 HRP.CoreUI (2298599), "
+            "HRP.CoreUI-Dates (3303802)"
+        )
+        suf = summary_suffix_for_deploy_plan_title(raw, rk)
+        self.assertTrue(suf.startswith("Релиз-2025-02-07"))
+        self.assertNotIn("HRPRELEASE-76202", suf)
+
+    def test_summary_suffix_plain_summary_unchanged(self):
+        rk = "HRPRELEASE-1"
+        raw = "Релиз-2025-02-07 Foo (1)"
+        self.assertEqual(summary_suffix_for_deploy_plan_title(raw, rk), raw)
 
     def test_merge_replaces_header_and_services_and_preserves_other_html(self):
         template_storage = """

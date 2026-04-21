@@ -167,9 +167,14 @@ class ConfluenceDeployPlanGenerator:
         if not space:
             return {"success": False, "message": "Не указан space_key", "details": ""}
 
-        # Title must be derived from the Jira release summary (Russian), per expected naming convention.
-        # Only the page title is changed; the page body/template merge remains untouched.
-        page_title = f"Deploy план {summary_raw}".strip()
+        # Заголовок: [KEY] Deploy plan + человекочитаемая тема релиза (как в Jira summary).
+        # Только название страницы; тело/шаблон не меняем.
+        suffix = summary_suffix_for_deploy_plan_title(summary_raw, rk)
+        page_title = (
+            f"[{rk}] Deploy plan {suffix}".strip() if suffix else f"[{rk}] Deploy plan"
+        )
+        if len(page_title) > _CONFLUENCE_PAGE_TITLE_MAX_LEN:
+            page_title = page_title[: _CONFLUENCE_PAGE_TITLE_MAX_LEN - 3] + "..."
 
         release_date_iso = extract_release_date_iso(summary_raw)
         release_date_human = format_ru_date(release_date_iso) if release_date_iso else ""
@@ -369,6 +374,35 @@ def build_component_table_rows(
             "<tr><td colspan=\"6\">Нет сервисов</td></tr>"
         )
     return "".join(rows)
+
+
+# Лимит заголовка страницы в Confluence (типично 255 символов).
+_CONFLUENCE_PAGE_TITLE_MAX_LEN = 255
+
+
+def summary_suffix_for_deploy_plan_title(summary_raw: str, release_key: str) -> str:
+    """
+    Часть темы релиза для заголовка страницы без повторения ключа в начале.
+    Summary из Jira может быть «KEY - Релиз-…» или только «Релиз-…».
+    """
+    s = (summary_raw or "").strip()
+    rk = (release_key or "").strip().upper()
+    if not s or s.upper() == "N/A":
+        return ""
+    if rk:
+        s = re.sub(
+            rf"^\[{re.escape(rk)}\]\s*[-–—:]\s*",
+            "",
+            s,
+            flags=re.IGNORECASE,
+        )
+        s = re.sub(
+            rf"^{re.escape(rk)}\s*[-–—:]\s*",
+            "",
+            s,
+            flags=re.IGNORECASE,
+        )
+    return s.strip()
 
 
 def extract_release_date_iso(summary_raw: str) -> Optional[str]:
