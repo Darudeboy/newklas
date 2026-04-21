@@ -2,10 +2,12 @@
 Единая точка входа: проверка гейтов релиза и выполнение перехода.
 run_release_check: сбор snapshot → rules → учёт manual_confirmations → результат.
 run_release_action: переход в целевой статус workflow (to.name) или по id/имени кнопки.
+run_workflow_autopilot: цикл проверка → переход, пока гейты зелёные.
 """
 import logging
 import os
-from typing import Any, Dict, Optional, Tuple
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.confluence_client import ConfluenceClient
 from core.snapshot_builder import build_release_snapshot
@@ -127,6 +129,188 @@ def run_release_check(
             logger.debug("Skip/failed posting success comment for %s: %s", safe_release, msg)
 
     return result
+
+
+def run_workflow_autopilot(
+    jira_service: Any,
+    release_key: str,
+    profile_name: str = "auto",
+    manual_confirmations: Optional[Dict[str, bool]] = None,
+    *,
+    post_success_comment: bool = False,
+    approval_status: str = "Утверждение ППСИ",
+    dry_run: bool = False,
+    max_steps: Optional[int] = None,
+    post_transition_delay_sec: Optional[float] = None,
+    stuck_threshold: int = 3,
+) -> Dict[str, Any]:
+    """
+    Непрерывно: run_release_check → при ready_for_transition переход в next_allowed_transition,
+    пока не terminal_stage, блокировка гейтами, ошибка Jira, лимит шагов или «застревание» статуса.
+
+    Возвращает dict: ok, stop_reason, steps, last_result, message.
+    stop_reason: terminal | blocked | jira_error | max_steps | stuck | dry_run_blocked | check_failed
+    """
+    safe_release = (release_key or "").strip().upper()
+    if not safe_release:
+        return {
+            "ok": False,
+            "stop_reason": "check_failed",
+            "steps": [],
+            "last_result": {},
+            "message": "Не указан release_key.",
+        }
+
+    if dry_run:
+        return {
+            "ok": False,
+            "stop_reason": "dry_run_blocked",
+            "steps": [],
+            "last_result": {},
+            "message": "Автопилот недоступен в dry-run: без реальных переходов цикл не продвинет состояние Jira.",
+        }
+
+    manual = manual_confirmations or {}
+    steps_log: List[Dict[str, Any]] = []
+
+    result = run_release_check(
+        jira_service,
+        safe_release,
+        profile_name,
+        manual,
+        post_success_comment=post_success_comment,
+        approval_status=approval_status,
+        dry_run=False,
+    )
+    if not result.get("success"):
+        return {
+            "ok": False,
+            "stop_reason": "check_failed",
+            "steps": steps_log,
+            "last_result": result,
+            "message": str(result.get("message") or "Ошибка проверки гейтов"),
+        }
+
+    project_key = result.get("project_key", "")
+    profile = get_release_flow_profile(
+        project_key=project_key,
+        requested_profile=profile_name,
+    )
+    wf_order = profile.get("workflow_order") or []
+    if max_steps is None:
+        raw_cap = (os.getenv("RELEASE_AUTOFLOW_MAX_STEPS") or "").strip()
+        max_steps = (
+            int(raw_cap)
+            if raw_cap.isdigit()
+            else min(30, len(wf_order) + 5 if wf_order else 15)
+        )
+    max_steps = max(1, min(100, int(max_steps)))
+    if post_transition_delay_sec is None:
+        try:
+            post_transition_delay_sec = float(
+                os.getenv("RELEASE_AUTOFLOW_POST_TRANSITION_DELAY_SEC", "1.5")
+            )
+        except ValueError:
+            post_transition_delay_sec = 1.5
+
+    st_thr = max(1, int(stuck_threshold))
+
+    while True:
+        if result.get("terminal_stage"):
+            return {
+                "ok": True,
+                "stop_reason": "terminal",
+                "steps": steps_log,
+                "last_result": result,
+                "message": str(
+                    result.get("terminal_reason") or "Финальный этап workflow."
+                ),
+            }
+
+        if not result.get("ready_for_transition"):
+            return {
+                "ok": False,
+                "stop_reason": "blocked",
+                "steps": steps_log,
+                "last_result": result,
+                "message": "Гейты или ручные проверки блокируют переход.",
+            }
+
+        next_status = (result.get("next_allowed_transition") or "").strip()
+        if not next_status:
+            return {
+                "ok": False,
+                "stop_reason": "blocked",
+                "steps": steps_log,
+                "last_result": result,
+                "message": "Следующий этап workflow не определён.",
+            }
+
+        if len(steps_log) >= max_steps:
+            return {
+                "ok": False,
+                "stop_reason": "max_steps",
+                "steps": steps_log,
+                "last_result": result,
+                "message": f"Достигнут лимит шагов автопилота ({max_steps}).",
+            }
+
+        stage_from = (result.get("current_stage") or "").strip()
+        ok_tr, msg_tr = jira_service.transition_issue_to_status(
+            safe_release, next_status
+        )
+        steps_log.append(
+            {
+                "from_stage": stage_from,
+                "to_status": next_status,
+                "ok": bool(ok_tr),
+            }
+        )
+        if not ok_tr:
+            return {
+                "ok": False,
+                "stop_reason": "jira_error",
+                "steps": steps_log,
+                "last_result": result,
+                "message": str(msg_tr or "Ошибка перехода в Jira"),
+            }
+
+        progressed = False
+        for attempt in range(st_thr):
+            time.sleep(post_transition_delay_sec * (attempt + 1))
+            result = run_release_check(
+                jira_service,
+                safe_release,
+                profile_name,
+                manual,
+                post_success_comment=post_success_comment,
+                approval_status=approval_status,
+                dry_run=False,
+            )
+            if not result.get("success"):
+                return {
+                    "ok": False,
+                    "stop_reason": "check_failed",
+                    "steps": steps_log,
+                    "last_result": result,
+                    "message": str(result.get("message") or "Ошибка проверки после перехода"),
+                }
+            cur = (result.get("current_stage") or "").strip()
+            if cur != stage_from:
+                progressed = True
+                break
+
+        if not progressed:
+            return {
+                "ok": False,
+                "stop_reason": "stuck",
+                "steps": steps_log,
+                "last_result": result,
+                "message": (
+                    f"Статус в Jira не сменился после перехода в «{next_status}» "
+                    f"(попыток ожидания: {st_thr})."
+                ),
+            }
 
 
 def run_release_action(

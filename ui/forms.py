@@ -82,6 +82,14 @@ class MainFormPanel(ctk.CTkFrame):
         ).pack(side="left", padx=6, pady=8)
         ctk.CTkButton(
             buttons,
+            text="Авто workflow",
+            command=self._autopilot,
+            fg_color="#00695C",
+            hover_color="#004D40",
+            text_color="#FFFFFF",
+        ).pack(side="left", padx=6, pady=8)
+        ctk.CTkButton(
+            buttons,
             text="Принудительный перевод",
             command=self._force_move,
             fg_color="#B71C1C",
@@ -217,6 +225,14 @@ class MainFormPanel(ctk.CTkFrame):
         self.controller.move_release_if_ready(
             release_key=self.get_release_key(),
             dry_run=self.is_dry_run(),
+        )
+
+    def _autopilot(self) -> None:
+        self.controller.start_workflow_autopilot(
+            release_key=self.get_release_key(),
+            profile=self.get_profile(),
+            dry_run=self.is_dry_run(),
+            post_success_comment=self.want_success_comment(),
         )
 
     def _force_move(self) -> None:

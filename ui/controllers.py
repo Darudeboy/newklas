@@ -21,7 +21,11 @@ from config import (
 )
 from core.dpm_client import DpmClient
 from core.jira_client import JiraService
-from core.orchestrator import format_release_gate_report, run_release_check
+from core.orchestrator import (
+    format_release_gate_report,
+    run_release_check,
+    run_workflow_autopilot,
+)
 from core.snapshot_builder import build_release_snapshot
 from history import OperationHistory
 from lt import run_lt_check_with_target
@@ -57,6 +61,7 @@ class AppController:
         self.history_path = history_path
         self.state = AppState()
         self.guided_cycle_context: dict[str, dict] = {}
+        self._workflow_autopilot_running = False
 
         self._ui_set_status = ui_set_status
         self._ui_set_result_text = ui_set_result_text
@@ -71,6 +76,7 @@ class AppController:
         self._form_get_fix_version: Callable[[], str] = lambda: ""
         self._form_get_dry_run: Callable[[], bool] = lambda: False
         self._form_get_profile: Callable[[], str] = lambda: "auto"
+        self._form_get_post_success_comment: Callable[[], bool] = lambda: False
 
         self._init_master_analyzer()
         self._init_dpm_client()
@@ -246,6 +252,26 @@ class AppController:
                 f"Результат — «Результаты»."
             )
 
+        # --- Автопилот workflow (непрерывные проверка + переход) ---
+        if re.search(
+            r"автопилот|авто\s*workflow|непрерывн\w*\s+(?:цикл|прогон)|прогон\s+без\s+останов",
+            lowered,
+        ):
+            if not release_key:
+                return "Укажи ключ релиза в сообщении или в поле Release key."
+            if dry:
+                return "Автопилот workflow в dry-run не поддерживается (нужны реальные переходы в Jira)."
+            self.start_workflow_autopilot(
+                release_key=release_key,
+                profile=profile,
+                dry_run=False,
+                post_success_comment=bool(self._form_get_post_success_comment()),
+            )
+            return (
+                f"Запускаю автопилот workflow для {release_key}. "
+                "Прогресс и итог — во вкладке «Результаты»."
+            )
+
         # --- Следующий шаг guided cycle ---
         if re.search(
             r"следующ\w*\s+шаг|следующ\w*\s+этап|двигай\s+дальше|двигай\s+статус|двинь\s+релиз",
@@ -322,6 +348,9 @@ class AppController:
                 "шаг",
                 "переход",
                 "workflow",
+                "автопилот",
+                "непрерывн",
+                "прогон",
                 "бизнес",
                 "bt",
                 "бт",
@@ -347,7 +376,7 @@ class AppController:
                 return (
                     "Не понял команду. Поддерживаем: RQG, проверка/статус релиза, "
                     "собери релиз (линк по fixVersion), cleanup, деплой план, следующий шаг, "
-                    "переход по workflow, БТ/FR."
+                    "переход по workflow, автопилот workflow, БТ/FR."
                 )
 
             intent = spec.get("intent")
@@ -368,6 +397,7 @@ class AppController:
                 "cleanup_issues": "cleanup_issues",
                 "next_release_step": "next_release_step",
                 "move_release_if_ready": "move_release_if_ready",
+                "workflow_autopilot": "workflow_autopilot",
                 "force_move_release": "force_move_release",
                 "business_requirements": "business_requirements",
                 "none": "none",
@@ -377,7 +407,7 @@ class AppController:
                 return (
                     "Не распознал команду. Поддерживаем: RQG, проверка/статус релиза, "
                     "собери релиз (линк по fixVersion), cleanup, деплой план, следующий шаг, "
-                    "переход по workflow, БТ/FR."
+                    "переход по workflow, автопилот workflow, БТ/FR."
                 )
 
             if intent == "none" or confidence_f < 0.55:
@@ -385,7 +415,7 @@ class AppController:
                     "Не уверен, какую команду ты хотел(а). Попробуй явнее: "
                     "«проведи RQG», «проверь гейты/статус релиза», «собери релиз (fixVersion)», "
                     "«убери лишние», «собери/опубликуй деплой план», «следующий шаг», "
-                    "«выполни переход», «собери БТ/FR»."
+                    "«выполни переход», «автопилот workflow», «собери БТ/FR»."
                 )
 
             # Dispatch: exactly one mapped command.
@@ -473,6 +503,22 @@ class AppController:
                         return "Отменено."
                 self.move_release_if_ready(release_key=release_key, dry_run=dry)
                 return f"Пробую выполнить переход по workflow для {release_key}."
+
+            if intent == "workflow_autopilot":
+                if not release_key:
+                    return "Укажи ключ релиза в сообщении или в поле Release key."
+                if dry:
+                    return "Автопилот workflow в dry-run не поддерживается."
+                self.start_workflow_autopilot(
+                    release_key=release_key,
+                    profile=profile,
+                    dry_run=False,
+                    post_success_comment=bool(self._form_get_post_success_comment()),
+                )
+                return (
+                    f"Запускаю автопилот workflow для {release_key}. "
+                    "Смотри вкладку «Результаты»."
+                )
 
             if intent == "force_move_release":
                 if not release_key:
@@ -683,6 +729,126 @@ class AppController:
                 )
             except Exception as e:
                 self._ui_set_result_text(f"Ошибка перехода: {e}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def start_workflow_autopilot(
+        self,
+        *,
+        release_key: str,
+        profile: str = "auto",
+        dry_run: bool = False,
+        post_success_comment: bool = False,
+    ) -> None:
+        safe_release = (release_key or "").strip().upper()
+        if not safe_release:
+            self._ui_show_error("Ошибка", "Введите ключ релиза.")
+            return
+        if dry_run:
+            self._ui_show_error(
+                "Автопилот",
+                "Автопилот workflow недоступен в режиме Dry-run.",
+            )
+            return
+        if self._workflow_autopilot_running:
+            self._ui_show_error(
+                "Автопилот",
+                "Уже выполняется автопилот workflow. Дождитесь завершения.",
+            )
+            return
+        if not self._ui_ask_yes_no(
+            "Автопилот workflow",
+            f"Запустить непрерывный цикл проверки гейтов и переходов для {safe_release}?\n\n"
+            "Пока гейты зелёные, инструмент будет переводить релиз на следующий этап "
+            "без остановок. Останов при блокировке гейтами, финальном этапе, ошибке Jira "
+            "или лимите шагов.",
+        ):
+            return
+
+        self._ui_set_status(f"Автопилот workflow: {safe_release}", "#1565C0")
+        self._ui_set_result_text(f"Автопилот workflow для {safe_release}…")
+
+        def worker():
+            self._workflow_autopilot_running = True
+            try:
+                ctx = self.guided_cycle_context.get(safe_release, {}) or {}
+                outcome = run_workflow_autopilot(
+                    self.jira_service,
+                    safe_release,
+                    profile_name=profile,
+                    manual_confirmations=ctx.get("manual_confirmations"),
+                    post_success_comment=post_success_comment,
+                    dry_run=False,
+                )
+                last = outcome.get("last_result") or {}
+                snapshot = build_release_snapshot(self.jira_service, safe_release)
+                self.state.last_result = last
+                self.state.last_snapshot = snapshot
+
+                stop = outcome.get("stop_reason") or ""
+                lines: list[str] = [
+                    "=" * 80,
+                    f"🤖 АВТОПИЛОТ WORKFLOW: {safe_release}",
+                    "=" * 80,
+                    f"Итог: ok={outcome.get('ok')} | причина останова: {stop}",
+                    str(outcome.get("message") or ""),
+                    "",
+                    "Выполненные переходы:",
+                ]
+                for i, step in enumerate(outcome.get("steps") or [], 1):
+                    lines.append(
+                        f"  {i}. «{step.get('from_stage')}» → «{step.get('to_status')}» "
+                        f"(ok={step.get('ok')})"
+                    )
+                if not outcome.get("steps"):
+                    lines.append("  (нет — переходы не выполнялись)")
+                lines.append("")
+                lines.append("─ Отчёт по последней проверке гейтов ─")
+                lines.append(format_release_gate_report(last))
+
+                self._ui_set_result_text("\n".join(lines))
+                ok_done = bool(outcome.get("ok"))
+                self._ui_set_status(
+                    "Готово" if ok_done else "Останов",
+                    "#2E7D32" if ok_done else "#E65100",
+                )
+
+                if last.get("success"):
+                    self.guided_cycle_context[safe_release] = {
+                        "profile": last.get("profile_name", profile),
+                        "dry_run": False,
+                        "last_result": last,
+                        "manual_confirmations": ctx.get("manual_confirmations", {}) or {},
+                    }
+
+                self.history.add(
+                    "Workflow autopilot",
+                    {
+                        "release": safe_release,
+                        "stop_reason": stop,
+                        "steps": len(outcome.get("steps") or []),
+                        "ok": outcome.get("ok"),
+                    },
+                )
+                self.history.save_to_file(self.history_path)
+
+                if stop in (
+                    "jira_error",
+                    "stuck",
+                    "max_steps",
+                    "check_failed",
+                ):
+                    self._ui_show_error(
+                        "Автопилот",
+                        str(outcome.get("message") or "Ошибка автопилота"),
+                    )
+            except Exception as e:
+                logger.exception("Workflow autopilot failed")
+                self._ui_set_status("Ошибка", "#C62828")
+                self._ui_set_result_text(f"Ошибка автопилота: {e}")
+                self._ui_show_error("Автопилот", str(e))
+            finally:
+                self._workflow_autopilot_running = False
 
         threading.Thread(target=worker, daemon=True).start()
 

@@ -181,4 +181,5 @@ class ModernJiraApp(ctk.CTk):
         self.controller._form_get_fix_version = self.form.get_fix_version
         self.controller._form_get_dry_run = self.form.is_dry_run
         self.controller._form_get_profile = self.form.get_profile
+        self.controller._form_get_post_success_comment = self.form.want_success_comment
 
