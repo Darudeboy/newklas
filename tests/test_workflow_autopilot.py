@@ -159,6 +159,65 @@ class WorkflowAutopilotTest(unittest.TestCase):
         self.assertEqual(out["stop_reason"], "terminal")
         self.assertEqual(len(out["steps"]), 1)
 
+    @patch("core.orchestrator.run_release_check")
+    @patch("core.orchestrator.time.sleep", return_value=None)
+    def test_register_distribution_before_ppsi_and_fail(self, _sleep, mock_check):
+        j = MagicMock()
+        j.register_distribution.return_value = (False, "ke required")
+        j.transition_issue_to_status.return_value = (True, "ok")
+        mock_check.return_value = _base_result(
+            current_stage="ПСИ",
+            next_allowed_transition="Согласование ППСИ",
+            ready_for_transition=True,
+        )
+        out = run_workflow_autopilot(
+            j,
+            "HRPRELEASE-1",
+            dry_run=False,
+            max_steps=10,
+            post_transition_delay_sec=0.01,
+        )
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["stop_reason"], "jira_error")
+        self.assertIn("ke required", out["message"])
+        # must stop before transition
+        j.transition_issue_to_status.assert_not_called()
+        self.assertEqual(len(out["steps"]), 1)
+        self.assertEqual(out["steps"][0]["to_status"], "register_distribution")
+
+    @patch("core.orchestrator.run_release_check")
+    @patch("core.orchestrator.time.sleep", return_value=None)
+    def test_register_distribution_before_ppsi_and_ok(self, _sleep, mock_check):
+        j = MagicMock()
+        j.register_distribution.return_value = (True, "registered")
+        j.transition_issue_to_status.return_value = (True, "ok")
+        mock_check.side_effect = [
+            _base_result(
+                current_stage="ПСИ",
+                next_allowed_transition="Согласование ППСИ",
+                ready_for_transition=True,
+            ),
+            _base_result(
+                current_stage="Согласование ППСИ",
+                terminal_stage=True,
+                ready_for_transition=False,
+                next_allowed_transition=None,
+                terminal_reason="Финал",
+            ),
+        ]
+        out = run_workflow_autopilot(
+            j,
+            "HRPRELEASE-1",
+            dry_run=False,
+            max_steps=10,
+            post_transition_delay_sec=0.01,
+        )
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["stop_reason"], "terminal")
+        self.assertEqual(len(out["steps"]), 2)
+        self.assertEqual(out["steps"][0]["to_status"], "register_distribution")
+        self.assertEqual(out["steps"][1]["to_status"], "Согласование ППСИ")
+
 
 if __name__ == "__main__":
     unittest.main()

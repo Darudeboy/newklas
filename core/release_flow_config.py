@@ -123,7 +123,8 @@ def _default_profile() -> Dict[str, Any]:
                 "id": "author_supervision_subtask",
                 "title": "Подзадача авторского надзора",
                 "keywords": ["авторск", "author supervision"],
-                "required_statuses": ["Закрыто", "Закрыт", "Closed"],
+                # Процесс допускает статус «Выполнен» (не всегда именно Closed/Закрыт).
+                "required_statuses": ["Закрыто", "Закрыт", "Closed", "Выполнен"],
                 "required": True,
             },
             {

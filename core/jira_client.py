@@ -756,6 +756,89 @@ class JiraService:
             )
             return False, f"Ошибка перехода в статус: {e}"
 
+    def register_distribution(self, issue_key: str) -> Tuple[bool, str]:
+        """
+        Автоматизация Jira UI действия «Вкладка Дистрибутивы → … → Зарегистрировать».
+
+        Endpoints из DevTools:
+        - LIST:     GET  /rest/release/1/registration/{issueKey}/all
+        - REGISTER: POST /rest/release/1/registration/register?id={id}&issueKey={issueKey}&registrationType=registration
+          (body отсутствует)
+        """
+        safe_key = (issue_key or "").strip().upper()
+        if not safe_key:
+            return False, "Не указан issue_key"
+        try:
+            items = self.jira.get(f"/rest/release/1/registration/{safe_key}/all")
+        except Exception as e:
+            self.logger.error("Не удалось получить список дистрибутивов для %s: %s", safe_key, e)
+            return False, f"Не удалось получить список дистрибутивов: {e}"
+
+        # atlassian-python-api may return list or dict; normalize to list[dict]
+        records: List[dict] = []
+        if isinstance(items, list):
+            records = [x for x in items if isinstance(x, dict)]
+        elif isinstance(items, dict):
+            # best-effort: some APIs wrap into {"items": [...]}
+            maybe = items.get("items") or items.get("data") or items.get("registrations")
+            if isinstance(maybe, list):
+                records = [x for x in maybe if isinstance(x, dict)]
+
+        if not records:
+            return True, "Дистрибутивы не найдены (список пуст) — регистрация не требуется."
+
+        def _needs_register(rec: dict) -> bool:
+            regs = rec.get("registeredReleases") or []
+            status = str(rec.get("status") or "")
+            srv = str(rec.get("serviceResponseStatus") or "")
+            is_valid = rec.get("isValid")
+            if isinstance(regs, list) and safe_key in [str(x).strip().upper() for x in regs]:
+                # already registered for this release; still re-register if marked invalid/failed
+                if is_valid is False:
+                    return True
+                if srv and srv.upper() not in ("SUCCESS", "OK", "TRUE"):
+                    return True
+                if status and "зарегистр" in status.lower():
+                    return False
+            # not registered for this release
+            return True
+
+        to_register = [r for r in records if _needs_register(r)]
+        if not to_register:
+            return True, f"Все дистрибутивы уже зарегистрированы для {safe_key}."
+
+        ok_count = 0
+        fail_msgs: List[str] = []
+        for rec in to_register:
+            rid = rec.get("id")
+            if rid is None:
+                continue
+            url = (
+                f"/rest/release/1/registration/register"
+                f"?id={rid}&issueKey={safe_key}&registrationType=registration"
+            )
+            try:
+                resp = self.jira.post(url, data={}, advanced_mode=True)
+            except Exception as e:
+                fail_msgs.append(f"id={rid}: {e}")
+                continue
+            if getattr(resp, "status_code", None) in (200, 201, 202, 204):
+                ok_count += 1
+                continue
+            hint = _jira_response_error_hint(resp)
+            msg = f"id={rid}: HTTP {getattr(resp, 'status_code', '?')}"
+            if hint:
+                msg += f" — {hint}"
+            fail_msgs.append(msg)
+
+        if fail_msgs:
+            return (
+                False,
+                f"Регистрация дистрибутивов: ok={ok_count}, fail={len(fail_msgs)}. "
+                + "; ".join(fail_msgs)[:800],
+            )
+        return True, f"Регистрация дистрибутивов выполнена: {ok_count} шт. для {safe_key}."
+
     def transition_issue_by_id(
         self, issue_key: str, transition_id: str
     ) -> Tuple[bool, str]:

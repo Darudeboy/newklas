@@ -256,6 +256,28 @@ def run_workflow_autopilot(
             }
 
         stage_from = (result.get("current_stage") or "").strip()
+
+        # Before PPSI coordination some Jira workflows require distribution registration.
+        if next_status == "Согласование ППСИ":
+            reg_fn = getattr(jira_service, "register_distribution", None)
+            if callable(reg_fn):
+                ok_reg, msg_reg = jira_service.register_distribution(safe_release)
+                steps_log.append(
+                    {
+                        "from_stage": stage_from,
+                        "to_status": "register_distribution",
+                        "ok": bool(ok_reg),
+                    }
+                )
+                if not ok_reg:
+                    return {
+                        "ok": False,
+                        "stop_reason": "jira_error",
+                        "steps": steps_log,
+                        "last_result": result,
+                        "message": str(msg_reg or "Ошибка регистрации дистрибутива"),
+                    }
+
         ok_tr, msg_tr = jira_service.transition_issue_to_status(
             safe_release, next_status
         )
