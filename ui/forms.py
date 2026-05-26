@@ -260,6 +260,7 @@ class MainFormPanel(ctk.CTkFrame):
         self.controller.link_issues(
             release_key=self.get_release_key(),
             fix_version=self.get_fix_version(),
+            project_key=self.get_project_key(),
             dry_run=self.is_dry_run(),
         )
 

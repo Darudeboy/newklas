@@ -21,6 +21,7 @@ from config import (
 )
 from core.dpm_client import DpmClient
 from core.jira_client import JiraService
+from core.jira_jql import build_fix_version_link_jql
 from core.orchestrator import (
     format_release_gate_report,
     run_release_check,
@@ -73,6 +74,7 @@ class AppController:
         self._ui_schedule_main: Optional[Callable[[Callable[[], None]], None]] = None
         # Поля формы для чат-команд (подставляются из app.py)
         self._form_get_release_key: Callable[[], str] = lambda: ""
+        self._form_get_project_key: Callable[[], str] = lambda: ""
         self._form_get_fix_version: Callable[[], str] = lambda: ""
         self._form_get_dry_run: Callable[[], bool] = lambda: False
         self._form_get_profile: Callable[[], str] = lambda: "auto"
@@ -230,10 +232,22 @@ class AppController:
                 return "Укажи ключ релиза в сообщении или в поле Release key."
             if not fv:
                 return "Укажи fixVersion в форме — без него линковка не выполняется."
+            effective_pk = self._resolve_effective_project_key(project_key or None)
+            if not effective_pk:
+                return (
+                    "Укажи Project в форме (например HRM), «проект HRM» в чате "
+                    "или сначала выполни проверку гейтов."
+                )
             self.link_issues(
-                release_key=release_key, fix_version=fv, dry_run=dry
+                release_key=release_key,
+                fix_version=fv,
+                project_key=effective_pk,
+                dry_run=dry,
             )
-            return f"Запускаю привязку задач fixVersion «{fv}» к {release_key}. Результат — «Результаты»."
+            return (
+                f"Запускаю привязку задач {effective_pk} / fixVersion «{fv}» к {release_key}. "
+                f"Результат — «Результаты»."
+            )
 
         # --- Убери лишние задачи (cleanup: снять связи, где fixVersion не совпадает) ---
         if re.search(
@@ -460,15 +474,28 @@ class AppController:
                     return "Укажи ключ релиза в сообщении или в поле Release key."
                 if not fv:
                     return "Укажи fixVersion в форме — без него линковка не выполняется."
+                effective_pk = self._resolve_effective_project_key(project_key or None)
+                if not effective_pk:
+                    return (
+                        "Укажи Project в форме (например HRM), «проект HRM» в чате "
+                        "или сначала выполни проверку гейтов."
+                    )
                 if not dry:
                     ok = self._ui_ask_yes_no(
                         "Подтверждение",
-                        f"Привязать задачи fixVersion='{fv}' к {release_key}?",
+                        f"Привязать задачи {effective_pk} / fixVersion='{fv}' к {release_key}?",
                     )
                     if not ok:
                         return "Отменено."
-                self.link_issues(release_key=release_key, fix_version=fv, dry_run=dry)
-                return f"Запускаю привязку задач fixVersion «{fv}» к {release_key}."
+                self.link_issues(
+                    release_key=release_key,
+                    fix_version=fv,
+                    project_key=effective_pk,
+                    dry_run=dry,
+                )
+                return (
+                    f"Запускаю привязку задач {effective_pk} / fixVersion «{fv}» к {release_key}."
+                )
 
             if intent == "cleanup_issues":
                 if not release_key:
@@ -1225,24 +1252,44 @@ class AppController:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def link_issues(self, *, release_key: str, fix_version: str, dry_run: bool = False) -> None:
+    def _resolve_effective_project_key(self, explicit: str | None = None) -> str:
+        pk = (explicit or self._form_get_project_key() or "").strip().upper()
+        if pk:
+            return pk
+        snap = self.state.last_snapshot or {}
+        return (snap.get("project_key") or "").strip().upper()
+
+    def link_issues(
+        self,
+        *,
+        release_key: str,
+        fix_version: str,
+        project_key: str | None = None,
+        dry_run: bool = False,
+    ) -> None:
         safe_release = (release_key or "").strip().upper()
         fv = (fix_version or "").strip()
+        pk = self._resolve_effective_project_key(project_key)
         if not safe_release or not fv:
             self._ui_show_error("Ошибка", "Нужны release_key и fixVersion.")
             return
+        if not pk:
+            self._ui_show_error(
+                "Нужен проект",
+                "Укажи Project в форме (например HRM), «проект HRM» в чате "
+                "или сначала выполни «Проверить» (snapshot подставит project_key).",
+            )
+            return
 
         self._ui_set_status("Linking…", "#1565C0")
-        self._reset_output(f"🔗 Привязка задач fixVersion='{fv}' -> {safe_release}")
+        self._reset_output(
+            f"🔗 Привязка {pk} / fixVersion='{fv}' -> {safe_release}"
+        )
 
         def worker():
             try:
-                self._append_output("Поиск задач по fixVersion…")
-                jql = (
-                    'project IN (HRM, HRC, NEUROUI, SFILE, SEARCHCS) '
-                    'AND issuetype IN (Bug, Story) '
-                    f'AND fixVersion = \"{fv}\"'
-                )
+                self._append_output(f"Поиск задач project={pk}, fixVersion='{fv}'…")
+                jql = build_fix_version_link_jql(pk, fv)
                 issues = self.jira_service.search_issues(jql)
                 if not issues:
                     self._append_output("ℹ️ Нет задач для привязки.")
@@ -1287,7 +1334,14 @@ class AppController:
 
                 self.history.add(
                     "Привязка задач",
-                    {"release_key": safe_release, "fix_version": fv, "total": total, "success": success_count, "errors": len(errors)},
+                    {
+                        "release_key": safe_release,
+                        "project_key": pk,
+                        "fix_version": fv,
+                        "total": total,
+                        "success": success_count,
+                        "errors": len(errors),
+                    },
                 )
                 self.history.save_to_file(self.history_path)
 
