@@ -26,7 +26,7 @@ class MainFormPanel(ctk.CTkFrame):
         self.project_key = ctk.StringVar(value="")
         self.fix_version = ctk.StringVar(value="")
         self.dry_run = ctk.BooleanVar(value=False)
-        self.post_success_comment = ctk.BooleanVar(value=False)
+        self.post_success_comment = ctk.BooleanVar(value=True)
         self.target_lt = ctk.StringVar(value="45")
 
         row1 = ctk.CTkFrame(form, fg_color="transparent")
@@ -56,7 +56,9 @@ class MainFormPanel(ctk.CTkFrame):
             side="left", padx=(0, 12)
         )
         ctk.CTkCheckBox(
-            row2, text="✅ Комментировать успех в Jira", variable=self.post_success_comment
+            row2,
+            text='✅ Комментарий «Релиз проверен» в Jira (1 раз)',
+            variable=self.post_success_comment,
         ).pack(side="left", padx=(0, 12))
 
         ctk.CTkLabel(row2, text="Target LT", width=70, anchor="w").pack(side="left")
@@ -213,6 +215,7 @@ class MainFormPanel(ctk.CTkFrame):
             release_key=self.get_release_key(),
             profile=self.get_profile(),
             dry_run=self.is_dry_run(),
+            post_success_comment=self.want_success_comment(),
         )
 
     def _next_step(self) -> None:

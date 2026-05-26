@@ -16,23 +16,39 @@ from core.release_flow_config import get_release_flow_profile
 
 logger = logging.getLogger(__name__)
 
-SUCCESS_COMMENT_MARKER = "[Release-Gates]"
-SUCCESS_COMMENT_TEXT = f"{SUCCESS_COMMENT_MARKER} Релиз готов к внедрению"
+SUCCESS_COMMENT_MARKER = "Релиз проверен"
+SUCCESS_COMMENT_TEXT = SUCCESS_COMMENT_MARKER
+# Старые шаблоны — не дублировать комментарий после смены текста.
+_LEGACY_COMMENT_MARKERS = (
+    SUCCESS_COMMENT_MARKER,
+    "[Release-Gates]",
+    "Релиз готов к внедрению",
+)
+
+
+def _release_already_commented(jira_service: Any, release_key: str) -> bool:
+    has_recent = getattr(jira_service, "has_recent_comment", None)
+    if not callable(has_recent):
+        return False
+    for marker in _LEGACY_COMMENT_MARKERS:
+        if has_recent(release_key, marker, lookback=50):
+            return True
+    return False
 
 
 def maybe_post_success_comment(
     jira_service: Any,
     result: Dict[str, Any],
     *,
-    approval_status: str = "Утверждение ППСИ",
     dry_run: bool = False,
 ) -> Tuple[bool, str]:
     """
-    Публикует один успешный комментарий в Jira (анти-спам по маркеру).
+    Публикует один комментарий «Релиз проверен» в Jira (анти-спам по маркеру).
     Условия:
-    - auto_failed пуст
-    - next_allowed_transition == approval_status
+    - проверка успешна, auto_failed пуст
+    - ready_for_transition
     - dry_run=False
+    - комментария с маркером ещё не было
     """
     if dry_run:
         return False, "dry-run: comment skipped"
@@ -40,17 +56,14 @@ def maybe_post_success_comment(
         return False, "result not successful"
     if result.get("auto_failed"):
         return False, "auto_failed not empty"
-    if (result.get("next_allowed_transition") or "") != approval_status:
-        return False, "not approval stage"
+    if not result.get("ready_for_transition"):
+        return False, "not ready for transition"
 
     release_key = (result.get("release_key") or "").strip().upper()
     if not release_key:
         return False, "missing release_key"
 
-    has_recent = getattr(jira_service, "has_recent_comment", None)
-    if callable(has_recent) and jira_service.has_recent_comment(
-        release_key, SUCCESS_COMMENT_MARKER, lookback=20
-    ):
+    if _release_already_commented(jira_service, release_key):
         return False, "already posted"
 
     add_comment = getattr(jira_service, "add_issue_comment", None)
@@ -66,7 +79,6 @@ def run_release_check(
     manual_confirmations: Optional[Dict[str, bool]] = None,
     *,
     post_success_comment: bool = False,
-    approval_status: str = "Утверждение ППСИ",
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -116,17 +128,24 @@ def run_release_check(
         len(result["auto_failed"]) == 0 and len(still_pending) == 0 and bool(result.get("next_allowed_transition"))
     )
 
+    comment_posted = False
+    comment_message = ""
     if post_success_comment:
         ok, msg = maybe_post_success_comment(
             jira_service,
             result,
-            approval_status=approval_status,
             dry_run=dry_run,
         )
+        comment_posted = bool(ok)
+        comment_message = str(msg or "")
         if ok:
             logger.info("Posted success comment for %s", safe_release)
         else:
             logger.debug("Skip/failed posting success comment for %s: %s", safe_release, msg)
+    result["success_comment"] = {
+        "posted": comment_posted,
+        "message": comment_message,
+    }
 
     return result
 
@@ -138,7 +157,6 @@ def run_workflow_autopilot(
     manual_confirmations: Optional[Dict[str, bool]] = None,
     *,
     post_success_comment: bool = False,
-    approval_status: str = "Утверждение ППСИ",
     dry_run: bool = False,
     max_steps: Optional[int] = None,
     post_transition_delay_sec: Optional[float] = None,
@@ -179,7 +197,6 @@ def run_workflow_autopilot(
         profile_name,
         manual,
         post_success_comment=post_success_comment,
-        approval_status=approval_status,
         dry_run=False,
     )
     if not result.get("success"):
@@ -306,7 +323,6 @@ def run_workflow_autopilot(
                 profile_name,
                 manual,
                 post_success_comment=post_success_comment,
-                approval_status=approval_status,
                 dry_run=False,
             )
             if not result.get("success"):
@@ -484,6 +500,11 @@ def format_release_gate_report(result: Dict[str, Any]) -> str:
 
     if result.get("ready_for_transition"):
         lines.append("🚀 Готов к переходу по workflow.")
+        sc = result.get("success_comment") or {}
+        if sc.get("posted"):
+            lines.append(f"💬 В Jira добавлен комментарий: «{SUCCESS_COMMENT_TEXT}»")
+        elif sc.get("message") == "already posted":
+            lines.append(f"💬 Комментарий «{SUCCESS_COMMENT_TEXT}» уже был в задаче (повторно не добавлялся).")
     else:
         lines.append("")
         lines.append("─── ИТОГ: ПОЧЕМУ НЕЛЬЗЯ ПЕРЕЙТИ ───")

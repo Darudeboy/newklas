@@ -24,6 +24,7 @@ from core.jira_client import JiraService
 from core.jira_jql import build_fix_version_link_jql
 from core.orchestrator import (
     format_release_gate_report,
+    maybe_post_success_comment,
     run_release_check,
     run_workflow_autopilot,
 )
@@ -201,7 +202,7 @@ class AppController:
                 release_key=release_key,
                 profile=profile,
                 dry_run=dry,
-                post_success_comment=False,
+                post_success_comment=bool(self._form_get_post_success_comment()),
             )
             return (
                 f"Запускаю полную проверку гейтов для {release_key} (как «Проверить»). "
@@ -219,7 +220,7 @@ class AppController:
                 release_key=release_key,
                 profile=profile,
                 dry_run=dry,
-                post_success_comment=False,
+                post_success_comment=bool(self._form_get_post_success_comment()),
             )
             return f"Запускаю проверку гейтов для {release_key}. Результат — во вкладке «Результаты»."
 
@@ -446,7 +447,7 @@ class AppController:
                     release_key=release_key,
                     profile=profile,
                     dry_run=dry,
-                    post_success_comment=False,
+                    post_success_comment=bool(self._form_get_post_success_comment()),
                 )
                 return (
                     f"Запускаю полную проверку гейтов для {release_key} (как «Проверить»)."
@@ -629,7 +630,12 @@ class AppController:
         threading.Thread(target=worker, daemon=True).start()
 
     def start_release_guided_cycle(
-        self, *, release_key: str, profile: str = "auto", dry_run: bool = False
+        self,
+        *,
+        release_key: str,
+        profile: str = "auto",
+        dry_run: bool = False,
+        post_success_comment: bool | None = None,
     ) -> None:
         safe_release = (release_key or "").strip().upper()
         if not safe_release:
@@ -639,6 +645,12 @@ class AppController:
         self._ui_set_status(f"Guided cycle: {safe_release}", "#1565C0")
         self._ui_set_result_text(f"Guided cycle для {safe_release}…")
 
+        want_comment = (
+            post_success_comment
+            if post_success_comment is not None
+            else bool(self._form_get_post_success_comment())
+        )
+
         def worker():
             try:
                 ctx = self.guided_cycle_context.get(safe_release, {}) or {}
@@ -647,6 +659,7 @@ class AppController:
                     release_key=safe_release,
                     profile_name=profile,
                     manual_confirmations=ctx.get("manual_confirmations"),
+                    post_success_comment=want_comment,
                     dry_run=dry_run,
                 )
                 report = format_release_gate_report(result)
@@ -666,6 +679,7 @@ class AppController:
                         "dry_run": dry_run,
                         "last_result": result,
                         "manual_confirmations": ctx.get("manual_confirmations", {}) or {},
+                        "post_success_comment": want_comment,
                     }
                     self.history.add(
                         "Guided cycle",
@@ -705,12 +719,20 @@ class AppController:
             try:
                 ctx = self.guided_cycle_context.get(safe_release)
                 if not ctx or not ctx.get("last_result"):
-                    result = run_release_check(self.jira_service, safe_release, "auto")
+                    want_comment = bool(self._form_get_post_success_comment())
+                    result = run_release_check(
+                        self.jira_service,
+                        safe_release,
+                        "auto",
+                        post_success_comment=want_comment,
+                        dry_run=dry_run,
+                    )
                     ctx = {
                         "profile": result.get("profile_name", "auto"),
                         "dry_run": dry_run,
                         "last_result": result,
                         "manual_confirmations": {},
+                        "post_success_comment": want_comment,
                     }
                     self.guided_cycle_context[safe_release] = ctx
 
@@ -737,6 +759,16 @@ class AppController:
                     )
                     return
 
+                want_comment = bool(
+                    ctx.get("post_success_comment", self._form_get_post_success_comment())
+                )
+                if want_comment:
+                    maybe_post_success_comment(
+                        self.jira_service,
+                        last,
+                        dry_run=False,
+                    )
+
                 ok, msg = self.jira_service.transition_issue_to_status(
                     safe_release, next_status
                 )
@@ -753,6 +785,7 @@ class AppController:
                     release_key=safe_release,
                     profile=ctx.get("profile", "auto"),
                     dry_run=effective_dry,
+                    post_success_comment=want_comment,
                 )
             except Exception as e:
                 self._ui_set_result_text(f"Ошибка перехода: {e}")
