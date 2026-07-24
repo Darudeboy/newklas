@@ -8,7 +8,15 @@ import customtkinter as ctk
 _GIGA_WAIT = "⏳ GigaChat…"
 
 from core.assistant import Assistant
-from ui.styles import font
+from ui.styles import (
+    card_frame,
+    entry_kwargs,
+    font,
+    muted_label,
+    section_label,
+    styled_button,
+    textbox_kwargs,
+)
 
 
 class ChatPanel(ctk.CTkFrame):
@@ -20,45 +28,51 @@ class ChatPanel(ctk.CTkFrame):
         get_context,
         execute_command=None,
     ):
-        super().__init__(master)
+        super().__init__(master, fg_color="transparent")
         self._assistant = assistant
         self._get_context = get_context
         self._execute_command = execute_command
 
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=16, pady=(16, 8))
+        section_label(header, "Ассистент").pack(side="left")
+        muted_label(header, "команды и GigaChat").pack(side="left", padx=(10, 0))
 
-        ctk.CTkLabel(header, text="Assistant", font=font(20, weight="bold")).pack(
-            side="left"
-        )
-
-        quick = ctk.CTkFrame(self)
+        quick = card_frame(self)
         quick.pack(fill="x", padx=16, pady=(0, 8))
+        inner = ctk.CTkFrame(quick, fg_color="transparent")
+        inner.pack(fill="x", padx=10, pady=8)
 
-        ctk.CTkButton(
-            quick, text="Краткий summary", width=140, command=self._quick_summary
-        ).pack(side="left", padx=6, pady=8)
-        ctk.CTkButton(
-            quick, text="Объясни блокеры", width=140, command=self._quick_blockers
-        ).pack(side="left", padx=6, pady=8)
-        ctk.CTkButton(
-            quick, text="Что дальше", width=120, command=self._quick_next_actions
-        ).pack(side="left", padx=6, pady=8)
+        styled_button(
+            inner, "Краткий summary", width=140, command=self._quick_summary, kind="ghost"
+        ).pack(side="left", padx=4, pady=4)
+        styled_button(
+            inner, "Объясни блокеры", width=140, command=self._quick_blockers, kind="ghost"
+        ).pack(side="left", padx=4, pady=4)
+        styled_button(
+            inner, "Что дальше", width=120, command=self._quick_next_actions, kind="ghost"
+        ).pack(side="left", padx=4, pady=4)
 
-        self.chat = ctk.CTkTextbox(self, font=font(13), wrap="word")
+        self.chat = ctk.CTkTextbox(self, font=font(13), wrap="word", **textbox_kwargs())
         self.chat.pack(fill="both", expand=True, padx=16, pady=(0, 8))
 
-        input_row = ctk.CTkFrame(self)
+        input_row = card_frame(self)
         input_row.pack(fill="x", padx=16, pady=(0, 16))
+        inner_in = ctk.CTkFrame(input_row, fg_color="transparent")
+        inner_in.pack(fill="x", padx=10, pady=8)
 
-        self.input = ctk.CTkEntry(input_row, placeholder_text="Спроси про результат…")
-        self.input.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=8)
+        self.input = ctk.CTkEntry(
+            inner_in,
+            placeholder_text="Спроси про результат или дай команду…",
+            **entry_kwargs(),
+        )
+        self.input.pack(side="left", fill="x", expand=True, padx=(0, 8))
         self.input.bind("<Return>", lambda _e: self.send())
 
-        self.send_btn = ctk.CTkButton(
-            input_row, text="Отправить", width=120, command=self.send
+        self.send_btn = styled_button(
+            inner_in, "Отправить", width=120, command=self.send, kind="primary"
         )
-        self.send_btn.pack(side="right", pady=8)
+        self.send_btn.pack(side="right")
 
         self.append(
             "Команды в чате: ключ релиза — в поле Release key или в тексте. "
@@ -92,8 +106,6 @@ class ChatPanel(ctk.CTkFrame):
         self.append(f"\nВы: {q}\n")
 
         if callable(self._execute_command):
-            # Execute deterministic controller commands first.
-            # If it returns non-None, we must NOT call assistant.reply() again.
             cmd_result = self._execute_command(
                 q, snapshot=snapshot, result=result, assistant=self._assistant
             )
@@ -153,4 +165,3 @@ class ChatPanel(ctk.CTkFrame):
         _snapshot, result = self._get_context()
         self.append("\n[Что дальше]\n")
         self.append(self._assistant.quick_next_actions(result=result or {}) + "\n")
-

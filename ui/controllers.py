@@ -34,6 +34,7 @@ from lt import run_lt_check_with_target
 from master_analyzer import ConfluenceDeployPlanGenerator, MasterServicesAnalyzer
 from release_pr_status import collect_release_tasks_pr_status, format_release_tasks_pr_report
 from rqg import run_rqg_check
+from ui.styles import STATUS
 
 logger = logging.getLogger(__name__)
 
@@ -594,7 +595,7 @@ class AppController:
             self._ui_show_error("Ошибка", "Введите ключ релиза.")
             return
 
-        self._ui_set_status("Проверка гейтов…", "#1565C0")
+        self._ui_set_status("Проверка гейтов…", STATUS["progress"])
         self._ui_set_result_text(f"Запуск проверки гейтов для {safe_release}…")
 
         def worker():
@@ -616,7 +617,7 @@ class AppController:
                 self._ui_set_result_text(report)
                 self._ui_set_status(
                     "Готово" if result.get("success") else "Ошибка",
-                    "#2E7D32" if result.get("success") else "#C62828",
+                    STATUS["ok"] if result.get("success") else STATUS["error"],
                 )
                 self.history.add(
                     "Проверка гейтов",
@@ -624,7 +625,7 @@ class AppController:
                 )
                 self.history.save_to_file(self.history_path)
             except Exception as e:
-                self._ui_set_status("Ошибка", "#C62828")
+                self._ui_set_status("Ошибка", STATUS["error"])
                 self._ui_set_result_text(f"Ошибка проверки: {e}")
 
         threading.Thread(target=worker, daemon=True).start()
@@ -642,7 +643,7 @@ class AppController:
             self._ui_show_error("Ошибка", "Введите ключ релиза.")
             return
 
-        self._ui_set_status(f"Guided cycle: {safe_release}", "#1565C0")
+        self._ui_set_status(f"Guided cycle: {safe_release}", STATUS["progress"])
         self._ui_set_result_text(f"Guided cycle для {safe_release}…")
 
         want_comment = (
@@ -670,7 +671,7 @@ class AppController:
                 self._ui_set_result_text(report)
                 self._ui_set_status(
                     "Готово" if result.get("success") else "Ошибка",
-                    "#2E7D32" if result.get("success") else "#C62828",
+                    STATUS["ok"] if result.get("success") else STATUS["error"],
                 )
 
                 if result.get("success"):
@@ -692,7 +693,7 @@ class AppController:
                     )
                     self.history.save_to_file(self.history_path)
             except Exception as e:
-                self._ui_set_status("Ошибка", "#C62828")
+                self._ui_set_status("Ошибка", STATUS["error"])
                 self._ui_set_result_text(f"Ошибка guided cycle: {e}")
 
         threading.Thread(target=worker, daemon=True).start()
@@ -825,7 +826,7 @@ class AppController:
         ):
             return
 
-        self._ui_set_status(f"Автопилот workflow: {safe_release}", "#1565C0")
+        self._ui_set_status(f"Автопилот workflow: {safe_release}", STATUS["progress"])
         self._ui_set_result_text(f"Автопилот workflow для {safe_release}…")
 
         def worker():
@@ -870,7 +871,7 @@ class AppController:
                 ok_done = bool(outcome.get("ok"))
                 self._ui_set_status(
                     "Готово" if ok_done else "Останов",
-                    "#2E7D32" if ok_done else "#E65100",
+                    STATUS["ok"] if ok_done else STATUS["warn"],
                 )
 
                 if last.get("success"):
@@ -904,7 +905,7 @@ class AppController:
                     )
             except Exception as e:
                 logger.exception("Workflow autopilot failed")
-                self._ui_set_status("Ошибка", "#C62828")
+                self._ui_set_status("Ошибка", STATUS["error"])
                 self._ui_set_result_text(f"Ошибка автопилота: {e}")
                 self._ui_show_error("Автопилот", str(e))
             finally:
@@ -976,20 +977,20 @@ class AppController:
         if not safe_release:
             self._ui_show_error("Ошибка", "Введите ключ релиза.")
             return
-        self._ui_set_status("LT…", "#1565C0")
+        self._ui_set_status("LT…", STATUS["progress"])
         self._ui_set_result_text(f"Запуск проверки LT для {safe_release}…")
 
         def worker():
             try:
                 report = run_lt_check_with_target(safe_release, float(target_lt))
                 self._ui_set_result_text(report)
-                self._ui_set_status("Готово", "#2E7D32")
+                self._ui_set_status("Готово", STATUS["ok"])
                 self.history.add(
                     "Проверка LT", {"release": safe_release, "target_lt": target_lt}
                 )
                 self.history.save_to_file(self.history_path)
             except Exception as e:
-                self._ui_set_status("Ошибка", "#C62828")
+                self._ui_set_status("Ошибка", STATUS["error"])
                 self._ui_set_result_text(f"Ошибка LT: {e}")
 
         threading.Thread(target=worker, daemon=True).start()
@@ -999,7 +1000,7 @@ class AppController:
         if not safe_release:
             self._ui_show_error("Ошибка", "Введите ключ релиза.")
             return
-        self._ui_set_status("RQG…", "#1565C0")
+        self._ui_set_status("RQG…", STATUS["progress"])
         self._ui_set_result_text(f"Запуск RQG-проверки для {safe_release}…")
 
         def worker():
@@ -1008,11 +1009,11 @@ class AppController:
                     self.jira_service, safe_release, max_depth=2, trigger_button=True
                 )
                 self._ui_set_result_text(report)
-                self._ui_set_status("Готово", "#2E7D32")
+                self._ui_set_status("Готово", STATUS["ok"])
                 self.history.add("RQG-проверка", {"release": safe_release})
                 self.history.save_to_file(self.history_path)
             except Exception as e:
-                self._ui_set_status("Ошибка", "#C62828")
+                self._ui_set_status("Ошибка", STATUS["error"])
                 self._ui_set_result_text(f"Ошибка RQG: {e}")
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1022,7 +1023,7 @@ class AppController:
         if not safe_release:
             self._ui_show_error("Ошибка", "Введите ключ релиза.")
             return
-        self._ui_set_status("Tasks+PR…", "#1565C0")
+        self._ui_set_status("Tasks+PR…", STATUS["progress"])
         self._ui_set_result_text(f"Проверка задач и PR для {safe_release}…")
 
         def worker():
@@ -1032,11 +1033,11 @@ class AppController:
                 )
                 text = format_release_tasks_pr_report(report_data)
                 self._ui_set_result_text(text)
-                self._ui_set_status("Готово", "#2E7D32")
+                self._ui_set_status("Готово", STATUS["ok"])
                 self.history.add("Проверка задач и PR", {"release": safe_release})
                 self.history.save_to_file(self.history_path)
             except Exception as e:
-                self._ui_set_status("Ошибка", "#C62828")
+                self._ui_set_status("Ошибка", STATUS["error"])
                 self._ui_set_result_text(f"Ошибка Tasks+PR: {e}")
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1064,7 +1065,7 @@ class AppController:
             self._ui_show_error("Нет bt3.py", f"Скрипт не найден: {script_path}")
             return
 
-        self._ui_set_status("БТ/FR…", "#1565C0")
+        self._ui_set_status("БТ/FR…", STATUS["progress"])
         self._ui_set_result_text(f"Запуск bt3.py для {safe_release} / {effective_project}…")
 
         def worker():
@@ -1095,7 +1096,7 @@ class AppController:
                 if ok and url:
                     text_out = f"✅ БТ/FR готово: {url}\n{msg}".strip()
                     self._ui_set_result_text(text_out)
-                    self._ui_set_status("Готово", "#2E7D32")
+                    self._ui_set_status("Готово", STATUS["ok"])
                     self.history.add("BT/FR", {"release": safe_release, "project": effective_project, "url": url})
                     self.history.save_to_file(self.history_path)
                     return
@@ -1109,10 +1110,10 @@ class AppController:
                     + (f"\nSTDERR:\n{err_preview}\n" if err_preview else "")
                 ).strip()
                 self._ui_set_result_text(text_out)
-                self._ui_set_status("Ошибка", "#C62828")
+                self._ui_set_status("Ошибка", STATUS["error"])
             except Exception as e:
                 self._ui_set_result_text(f"Ошибка BT/FR: {e}")
-                self._ui_set_status("Ошибка", "#C62828")
+                self._ui_set_status("Ошибка", STATUS["error"])
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1125,7 +1126,7 @@ class AppController:
             self._ui_show_error("Ошибка", "Confluence/Master analyzer не настроен. Проверь .env.")
             return
 
-        self._ui_set_status("Master analyze…", "#1565C0")
+        self._ui_set_status("Master analyze…", STATUS["progress"])
         self._ui_set_result_text(f"Анализ master-сервисов для {safe_release}…")
 
         def worker():
@@ -1137,14 +1138,14 @@ class AppController:
                 self._ui_set_result_text(
                     json.dumps(analysis, ensure_ascii=False, indent=2)[:20000]
                 )
-                self._ui_set_status("Готово", "#2E7D32")
+                self._ui_set_status("Готово", STATUS["ok"])
                 self.history.add(
                     "Master analyze",
                     {"release": safe_release, "services": len(analysis.get("services", []) or [])},
                 )
                 self.history.save_to_file(self.history_path)
             except Exception as e:
-                self._ui_set_status("Ошибка", "#C62828")
+                self._ui_set_status("Ошибка", STATUS["error"])
                 self._ui_set_result_text(f"Ошибка master analysis: {e}")
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1178,7 +1179,7 @@ class AppController:
         if not ok:
             return
 
-        self._ui_set_status("Deploy plan…", "#1565C0")
+        self._ui_set_status("Deploy plan…", STATUS["progress"])
         self._reset_output("📝 Создание Deploy plan…")
 
         def worker():
@@ -1195,7 +1196,7 @@ class AppController:
                     self._append_output("✅ Deploy plan создан/обновлён")
                     self._append_output(f"📄 {page_title}")
                     self._append_output(f"🔗 {page_url}")
-                    self._ui_set_status("Готово", "#2E7D32")
+                    self._ui_set_status("Готово", STATUS["ok"])
                     self.history.add(
                         "Deploy plan",
                         {"release": analysis.get("release_key"), "services_count": len(services), "page_url": page_url},
@@ -1207,10 +1208,10 @@ class AppController:
                     self._append_output(f"❌ {msg}")
                     if details:
                         self._append_output(str(details)[:2000])
-                    self._ui_set_status("Ошибка", "#C62828")
+                    self._ui_set_status("Ошибка", STATUS["error"])
             except Exception as e:
                 self._append_output(f"❌ Ошибка Deploy plan: {e}")
-                self._ui_set_status("Ошибка", "#C62828")
+                self._ui_set_status("Ошибка", STATUS["error"])
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1238,7 +1239,7 @@ class AppController:
         if not self.master_analyzer:
             self._ui_show_error("Ошибка", "Confluence/Master analyzer не настроен. Проверь .env.")
             return
-        self._ui_set_status("Master → Deploy plan…", "#1565C0")
+        self._ui_set_status("Master → Deploy plan…", STATUS["progress"])
         self._ui_set_result_text(
             f"Анализ связанных Story/Bug и PR для {safe_release}… затем откроется подтверждение Deploy plan."
         )
@@ -1252,7 +1253,7 @@ class AppController:
                 self._ui_set_result_text(
                     json.dumps(analysis, ensure_ascii=False, indent=2)[:20000]
                 )
-                self._ui_set_status("Готово (анализ)", "#2E7D32")
+                self._ui_set_status("Готово (анализ)", STATUS["ok"])
                 self.history.add(
                     "Master analyze",
                     {
@@ -1280,7 +1281,7 @@ class AppController:
 
                 self._schedule_main(on_main)
             except Exception as e:
-                self._ui_set_status("Ошибка", "#C62828")
+                self._ui_set_status("Ошибка", STATUS["error"])
                 self._ui_set_result_text(f"Ошибка пайплайна Deploy plan: {e}")
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1314,7 +1315,7 @@ class AppController:
             )
             return
 
-        self._ui_set_status("Linking…", "#1565C0")
+        self._ui_set_status("Linking…", STATUS["progress"])
         self._reset_output(
             f"🔗 Привязка {pk} / fixVersion='{fv}' -> {safe_release}"
         )
@@ -1326,14 +1327,14 @@ class AppController:
                 issues = self.jira_service.search_issues(jql)
                 if not issues:
                     self._append_output("ℹ️ Нет задач для привязки.")
-                    self._ui_set_status("Готово", "#2E7D32")
+                    self._ui_set_status("Готово", STATUS["ok"])
                     return
 
                 link_types = self.jira_service.get_link_types() or {}
                 link_type_name = next((name for name in link_types if "part" in name.lower()), None)
                 if not link_type_name:
                     self._append_output("❌ Не найден подходящий тип связи (PartOf).")
-                    self._ui_set_status("Ошибка", "#C62828")
+                    self._ui_set_status("Ошибка", STATUS["error"])
                     return
 
                 self._append_output("Проверка существующих связей релиза…")
@@ -1344,7 +1345,7 @@ class AppController:
                 ]
                 if not issues_to_link:
                     self._append_output(f"ℹ️ Все задачи уже привязаны к {safe_release}.")
-                    self._ui_set_status("Готово", "#2E7D32")
+                    self._ui_set_status("Готово", STATUS["ok"])
                     return
 
                 total = len(issues_to_link)
@@ -1363,7 +1364,7 @@ class AppController:
                             errors.append(key)
                             self._append_output(f"❌ {key}")
                     if i % 25 == 0 or i == total:
-                        self._ui_set_status(f"Linking… {i}/{total}", "#1565C0")
+                        self._ui_set_status(f"Linking… {i}/{total}", STATUS["progress"])
 
                 self.history.add(
                     "Привязка задач",
@@ -1380,10 +1381,10 @@ class AppController:
 
                 msg = f"Готово. Успешно: {success_count}/{total}" + (f", ошибок: {len(errors)}" if errors else "")
                 self._append_output(msg)
-                self._ui_set_status("Готово", "#2E7D32" if not errors else "#EF6C00")
+                self._ui_set_status("Готово", STATUS["ok"] if not errors else STATUS["warn"])
             except Exception as e:
                 self._append_output(f"❌ Ошибка линкинга: {e}")
-                self._ui_set_status("Ошибка", "#C62828")
+                self._ui_set_status("Ошибка", STATUS["error"])
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1394,7 +1395,7 @@ class AppController:
             self._ui_show_error("Ошибка", "Нужны release_key и fixVersion.")
             return
 
-        self._ui_set_status("Cleanup…", "#1565C0")
+        self._ui_set_status("Cleanup…", STATUS["progress"])
         self._reset_output(f"🧹 Очистка связей релиза {safe_release} (оставить только fixVersion='{fv}')")
 
         def worker():
@@ -1402,7 +1403,7 @@ class AppController:
                 linked = self.jira_service.get_linked_issues(safe_release)
                 if not linked:
                     self._append_output("ℹ️ Нет связанных задач.")
-                    self._ui_set_status("Готово", "#2E7D32")
+                    self._ui_set_status("Готово", STATUS["ok"])
                     return
 
                 total = len(linked)
@@ -1430,15 +1431,15 @@ class AppController:
                                         self._append_output(f"✅ {issue_key} (removed)")
                                 break
                     if i % 25 == 0 or i == total:
-                        self._ui_set_status(f"Cleanup… {i}/{total}", "#1565C0")
+                        self._ui_set_status(f"Cleanup… {i}/{total}", STATUS["progress"])
 
                 self.history.add("Очистка связей", {"release_key": safe_release, "fix_version": fv, "total": total, "removed": removed})
                 self.history.save_to_file(self.history_path)
                 self._append_output(f"Готово. Удалено: {removed}/{total}")
-                self._ui_set_status("Готово", "#2E7D32")
+                self._ui_set_status("Готово", STATUS["ok"])
             except Exception as e:
                 self._append_output(f"❌ Ошибка cleanup: {e}")
-                self._ui_set_status("Ошибка", "#C62828")
+                self._ui_set_status("Ошибка", STATUS["error"])
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1457,7 +1458,7 @@ class AppController:
             if not ok:
                 return
 
-        self._ui_set_status("Remove all…", "#1565C0")
+        self._ui_set_status("Remove all…", STATUS["progress"])
         self._reset_output(f"🗑 Удаление всех связей {safe_release} (fixVersion='{fv}')")
 
         def worker():
@@ -1465,7 +1466,7 @@ class AppController:
                 linked = self.jira_service.get_linked_issues(safe_release)
                 if not linked:
                     self._append_output("ℹ️ Нет связанных задач.")
-                    self._ui_set_status("Готово", "#2E7D32")
+                    self._ui_set_status("Готово", STATUS["ok"])
                     return
 
                 total = len(linked)
@@ -1497,16 +1498,16 @@ class AppController:
                                         self._append_output(f"❌ {issue_key} failed")
                                 break
                     if i % 25 == 0 or i == total:
-                        self._ui_set_status(f"Remove all… {i}/{total}", "#1565C0")
+                        self._ui_set_status(f"Remove all… {i}/{total}", STATUS["progress"])
 
                 self.history.add("Удаление всех связей", {"release_key": safe_release, "fix_version": fv, "total": total, "removed": removed, "errors": len(errors)})
                 self.history.save_to_file(self.history_path)
                 msg = f"Готово. Удалено: {removed}/{total}" + (f", ошибок: {len(errors)}" if errors else "")
                 self._append_output(msg)
-                self._ui_set_status("Готово", "#2E7D32" if not errors else "#EF6C00")
+                self._ui_set_status("Готово", STATUS["ok"] if not errors else STATUS["warn"])
             except Exception as e:
                 self._append_output(f"❌ Ошибка remove-all: {e}")
-                self._ui_set_status("Ошибка", "#C62828")
+                self._ui_set_status("Ошибка", STATUS["error"])
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1534,7 +1535,7 @@ class AppController:
             self._ui_show_error("Нет arch.py", f"Скрипт не найден: {script_path}")
             return
 
-        self._ui_set_status("Architecture…", "#1565C0")
+        self._ui_set_status("Architecture…", STATUS["progress"])
         self._reset_output(f"🏗 Проставление архитектуры: {pk} / {fv}")
 
         def worker():
@@ -1551,7 +1552,7 @@ class AppController:
                     self._append_output("✅ Готово")
                     if out:
                         self._append_output(out[-2000:])
-                    self._ui_set_status("Готово", "#2E7D32")
+                    self._ui_set_status("Готово", STATUS["ok"])
                     self.history.add("Architecture", {"project": pk, "fix_version": fv})
                     self.history.save_to_file(self.history_path)
                 else:
@@ -1560,10 +1561,10 @@ class AppController:
                         self._append_output("STDOUT:\n" + out[-2000:])
                     if err:
                         self._append_output("STDERR:\n" + err[-2000:])
-                    self._ui_set_status("Ошибка", "#C62828")
+                    self._ui_set_status("Ошибка", STATUS["error"])
             except Exception as e:
                 self._append_output(f"❌ Ошибка Architecture: {e}")
-                self._ui_set_status("Ошибка", "#C62828")
+                self._ui_set_status("Ошибка", STATUS["error"])
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1646,7 +1647,7 @@ class AppController:
             return
 
         safe_stage = (target_stage or "").strip().upper()
-        self._ui_set_status(f"DPM {safe_stage}…", "#1565C0")
+        self._ui_set_status(f"DPM {safe_stage}…", STATUS["progress"])
         self._reset_output(f"🚀 Раскатка на {safe_stage} через DPM — {safe_release}")
 
         def fetch_services_worker():
@@ -1655,34 +1656,34 @@ class AppController:
                 ci_number, version, resolve_msg = self._resolve_dpm_params(safe_release)
                 self._append_output(resolve_msg)
                 if not ci_number or not version:
-                    self._ui_set_status("Ошибка", "#C62828")
+                    self._ui_set_status("Ошибка", STATUS["error"])
                     return
 
                 self._append_output(f"Поиск приложения в DPM по КЭ={ci_number}…")
                 app, app_msg = self.dpm_client.find_app_by_ci(ci_number)
                 self._append_output(app_msg)
                 if not app:
-                    self._ui_set_status("Ошибка", "#C62828")
+                    self._ui_set_status("Ошибка", STATUS["error"])
                     return
 
                 app_id = app.get("id")
                 if not app_id:
                     self._append_output("Не удалось получить id приложения.")
-                    self._ui_set_status("Ошибка", "#C62828")
+                    self._ui_set_status("Ошибка", STATUS["error"])
                     return
 
                 self._append_output(f"Запрос микросервисов (FSS) для приложения id={app_id}…")
                 services, svc_msg = self.dpm_client.list_services(int(app_id))
                 self._append_output(svc_msg)
                 if not services:
-                    self._ui_set_status("Ошибка", "#C62828")
+                    self._ui_set_status("Ошибка", STATUS["error"])
                     return
 
                 def on_main_choose():
                     chosen = self._show_service_chooser(services, safe_stage)
                     if chosen is None:
                         self._append_output("Отменено пользователем.")
-                        self._ui_set_status("Отменено", "#616161")
+                        self._ui_set_status("Отменено", STATUS["idle"])
                         return
 
                     fss_id = DpmClient.get_service_id(chosen)
@@ -1690,7 +1691,7 @@ class AppController:
                     self._append_output(f"Выбран: {svc_name} (fss_id={fss_id})")
                     if fss_id is None:
                         self._append_output("Не удалось получить id микросервиса.")
-                        self._ui_set_status("Ошибка", "#C62828")
+                        self._ui_set_status("Ошибка", STATUS["error"])
                         return
 
                     if not dry_run:
@@ -1705,7 +1706,7 @@ class AppController:
                         )
                         if not ok:
                             self._append_output("Отменено пользователем.")
-                            self._ui_set_status("Отменено", "#616161")
+                            self._ui_set_status("Отменено", STATUS["idle"])
                             return
 
                     def deploy_worker():
@@ -1720,19 +1721,19 @@ class AppController:
                             for line in msg.split("\n"):
                                 self._append_output(line)
                             if ok_deploy:
-                                self._ui_set_status(f"Готово ({safe_stage})", "#2E7D32")
+                                self._ui_set_status(f"Готово ({safe_stage})", STATUS["ok"])
                             else:
-                                self._ui_set_status("Ошибка DPM", "#C62828")
+                                self._ui_set_status("Ошибка DPM", STATUS["error"])
                         except Exception as e:
                             self._append_output(f"❌ Ошибка DPM: {e}")
-                            self._ui_set_status("Ошибка DPM", "#C62828")
+                            self._ui_set_status("Ошибка DPM", STATUS["error"])
 
                     threading.Thread(target=deploy_worker, daemon=True).start()
 
                 self._schedule_main(on_main_choose)
             except Exception as e:
                 self._append_output(f"❌ Ошибка DPM: {e}")
-                self._ui_set_status("Ошибка DPM", "#C62828")
+                self._ui_set_status("Ошибка DPM", STATUS["error"])
 
         threading.Thread(target=fetch_services_worker, daemon=True).start()
 
@@ -1745,7 +1746,7 @@ class AppController:
             self._ui_show_error("DPM не настроен", "DPM_URL и DPM_TOKEN должны быть указаны в .env.")
             return
 
-        self._ui_set_status("DPM статус…", "#1565C0")
+        self._ui_set_status("DPM статус…", STATUS["progress"])
         self._reset_output(f"📊 Статус конвейера DPM — {safe_release}")
 
         def fetch_worker():
@@ -1754,34 +1755,34 @@ class AppController:
                 ci_number, version, resolve_msg = self._resolve_dpm_params(safe_release)
                 self._append_output(resolve_msg)
                 if not ci_number or not version:
-                    self._ui_set_status("Ошибка", "#C62828")
+                    self._ui_set_status("Ошибка", STATUS["error"])
                     return
 
                 self._append_output(f"Поиск приложения в DPM по КЭ={ci_number}…")
                 app, app_msg = self.dpm_client.find_app_by_ci(ci_number)
                 self._append_output(app_msg)
                 if not app:
-                    self._ui_set_status("Ошибка", "#C62828")
+                    self._ui_set_status("Ошибка", STATUS["error"])
                     return
 
                 app_id = app.get("id")
                 if not app_id:
                     self._append_output("Не удалось получить id приложения.")
-                    self._ui_set_status("Ошибка", "#C62828")
+                    self._ui_set_status("Ошибка", STATUS["error"])
                     return
 
                 self._append_output(f"Запрос микросервисов (FSS) для приложения id={app_id}…")
                 services, svc_msg = self.dpm_client.list_services(int(app_id))
                 self._append_output(svc_msg)
                 if not services:
-                    self._ui_set_status("Ошибка", "#C62828")
+                    self._ui_set_status("Ошибка", STATUS["error"])
                     return
 
                 def on_main_choose():
                     chosen = self._show_service_chooser(services, "статус")
                     if chosen is None:
                         self._append_output("Отменено пользователем.")
-                        self._ui_set_status("Отменено", "#616161")
+                        self._ui_set_status("Отменено", STATUS["idle"])
                         return
 
                     fss_id = DpmClient.get_service_id(chosen)
@@ -1789,7 +1790,7 @@ class AppController:
                     self._append_output(f"Выбран: {svc_name} (fss_id={fss_id})")
                     if fss_id is None:
                         self._append_output("Не удалось получить id микросервиса.")
-                        self._ui_set_status("Ошибка", "#C62828")
+                        self._ui_set_status("Ошибка", STATUS["error"])
                         return
 
                     def status_worker():
@@ -1797,16 +1798,16 @@ class AppController:
                             ok, msg = self.dpm_client.get_status_for_service_release(fss_id, version)
                             for line in msg.split("\n"):
                                 self._append_output(line)
-                            self._ui_set_status("Готово", "#2E7D32" if ok else "#C62828")
+                            self._ui_set_status("Готово", STATUS["ok"] if ok else STATUS["error"])
                         except Exception as e:
                             self._append_output(f"❌ Ошибка DPM: {e}")
-                            self._ui_set_status("Ошибка DPM", "#C62828")
+                            self._ui_set_status("Ошибка DPM", STATUS["error"])
 
                     threading.Thread(target=status_worker, daemon=True).start()
 
                 self._schedule_main(on_main_choose)
             except Exception as e:
                 self._append_output(f"❌ Ошибка DPM: {e}")
-                self._ui_set_status("Ошибка DPM", "#C62828")
+                self._ui_set_status("Ошибка DPM", STATUS["error"])
 
         threading.Thread(target=fetch_worker, daemon=True).start()

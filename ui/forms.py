@@ -4,22 +4,21 @@ from typing import Any, Optional
 
 import customtkinter as ctk
 
-from ui.styles import font
+from ui.styles import (
+    COLORS,
+    card_frame,
+    entry_kwargs,
+    font,
+    muted_label,
+    section_label,
+    styled_button,
+)
 
 
 class MainFormPanel(ctk.CTkFrame):
     def __init__(self, master: ctk.CTkBaseClass, *, controller):
-        super().__init__(master)
+        super().__init__(master, fg_color="transparent")
         self.controller = controller
-
-        header = ctk.CTkFrame(self, fg_color="transparent")
-        header.pack(fill="x", padx=16, pady=(16, 8))
-        ctk.CTkLabel(header, text="Релиз", font=font(20, weight="bold")).pack(
-            side="left"
-        )
-
-        form = ctk.CTkFrame(self)
-        form.pack(fill="x", padx=16, pady=(0, 12))
 
         self.release_key = ctk.StringVar(value="")
         self.profile = ctk.StringVar(value="auto")
@@ -29,156 +28,198 @@ class MainFormPanel(ctk.CTkFrame):
         self.post_success_comment = ctk.BooleanVar(value=True)
         self.target_lt = ctk.StringVar(value="45")
 
-        row1 = ctk.CTkFrame(form, fg_color="transparent")
-        row1.pack(fill="x", padx=10, pady=(10, 6))
-        ctk.CTkLabel(row1, text="Release key", width=110, anchor="w").pack(
-            side="left"
-        )
-        self.release_entry = ctk.CTkEntry(row1, textvariable=self.release_key)
-        self.release_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        ctk.CTkLabel(row1, text="Профиль", width=70, anchor="w").pack(side="left")
-        self.profile_entry = ctk.CTkEntry(row1, textvariable=self.profile, width=110)
-        self.profile_entry.pack(side="left")
+        self._build_release_card()
+        self._build_workflow_card()
+        self._build_ops_card()
+        self._build_dpm_card()
 
-        row1b = ctk.CTkFrame(form, fg_color="transparent")
-        row1b.pack(fill="x", padx=10, pady=(0, 6))
-        ctk.CTkLabel(row1b, text="Project", width=110, anchor="w").pack(side="left")
-        self.project_entry = ctk.CTkEntry(row1b, textvariable=self.project_key, width=110)
-        self.project_entry.pack(side="left", padx=(0, 8))
-        ctk.CTkLabel(row1b, text="fixVersion", width=70, anchor="w").pack(side="left")
-        self.fix_version_entry = ctk.CTkEntry(row1b, textvariable=self.fix_version)
-        self.fix_version_entry.pack(side="left", fill="x", expand=True)
+    def _field_label(self, parent, text: str) -> None:
+        muted_label(parent, text, size=11).pack(anchor="w")
+
+    def _build_release_card(self) -> None:
+        card = card_frame(self)
+        card.pack(fill="x", padx=16, pady=(12, 8))
+
+        section_label(card, "Релиз").pack(anchor="w", padx=16, pady=(14, 10))
+
+        form = ctk.CTkFrame(card, fg_color="transparent")
+        form.pack(fill="x", padx=16, pady=(0, 6))
+
+        row1 = ctk.CTkFrame(form, fg_color="transparent")
+        row1.pack(fill="x", pady=(0, 8))
+
+        col_rel = ctk.CTkFrame(row1, fg_color="transparent")
+        col_rel.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self._field_label(col_rel, "Release key")
+        self.release_entry = ctk.CTkEntry(
+            col_rel, textvariable=self.release_key, **entry_kwargs()
+        )
+        self.release_entry.pack(fill="x", pady=(4, 0))
+
+        col_prof = ctk.CTkFrame(row1, fg_color="transparent")
+        col_prof.pack(side="left")
+        self._field_label(col_prof, "Профиль")
+        self.profile_entry = ctk.CTkEntry(
+            col_prof, textvariable=self.profile, width=110, **entry_kwargs()
+        )
+        self.profile_entry.pack(pady=(4, 0))
 
         row2 = ctk.CTkFrame(form, fg_color="transparent")
-        row2.pack(fill="x", padx=10, pady=(0, 10))
+        row2.pack(fill="x", pady=(0, 8))
 
-        ctk.CTkCheckBox(row2, text="Dry-run", variable=self.dry_run).pack(
-            side="left", padx=(0, 12)
+        col_proj = ctk.CTkFrame(row2, fg_color="transparent")
+        col_proj.pack(side="left", padx=(0, 10))
+        self._field_label(col_proj, "Project")
+        self.project_entry = ctk.CTkEntry(
+            col_proj, textvariable=self.project_key, width=120, **entry_kwargs()
         )
+        self.project_entry.pack(pady=(4, 0))
+
+        col_fv = ctk.CTkFrame(row2, fg_color="transparent")
+        col_fv.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self._field_label(col_fv, "fixVersion")
+        self.fix_version_entry = ctk.CTkEntry(
+            col_fv, textvariable=self.fix_version, **entry_kwargs()
+        )
+        self.fix_version_entry.pack(fill="x", pady=(4, 0))
+
+        col_lt = ctk.CTkFrame(row2, fg_color="transparent")
+        col_lt.pack(side="left")
+        self._field_label(col_lt, "Target LT")
+        self.target_lt_entry = ctk.CTkEntry(
+            col_lt, textvariable=self.target_lt, width=90, **entry_kwargs()
+        )
+        self.target_lt_entry.pack(pady=(4, 0))
+
+        opts = ctk.CTkFrame(card, fg_color="transparent")
+        opts.pack(fill="x", padx=16, pady=(4, 14))
         ctk.CTkCheckBox(
-            row2,
-            text='✅ Комментарий «Релиз проверен» в Jira (1 раз)',
+            opts,
+            text="Dry-run",
+            variable=self.dry_run,
+            text_color=COLORS["text_muted"],
+            fg_color=COLORS["primary"],
+            hover_color=COLORS["primary_hover"],
+            border_color=COLORS["border"],
+            checkmark_color=COLORS["text"],
+        ).pack(side="left", padx=(0, 16))
+        ctk.CTkCheckBox(
+            opts,
+            text='Комментарий «Релиз проверен» в Jira (1 раз)',
             variable=self.post_success_comment,
-        ).pack(side="left", padx=(0, 12))
+            text_color=COLORS["text_muted"],
+            fg_color=COLORS["primary"],
+            hover_color=COLORS["primary_hover"],
+            border_color=COLORS["border"],
+            checkmark_color=COLORS["text"],
+        ).pack(side="left")
 
-        ctk.CTkLabel(row2, text="Target LT", width=70, anchor="w").pack(side="left")
-        self.target_lt_entry = ctk.CTkEntry(row2, textvariable=self.target_lt, width=90)
-        self.target_lt_entry.pack(side="left", padx=(0, 8))
+    def _build_workflow_card(self) -> None:
+        card = card_frame(self)
+        card.pack(fill="x", padx=16, pady=8)
 
-        buttons = ctk.CTkFrame(self)
-        buttons.pack(fill="x", padx=16, pady=(0, 16))
+        head = ctk.CTkFrame(card, fg_color="transparent")
+        head.pack(fill="x", padx=16, pady=(14, 6))
+        section_label(head, "Workflow").pack(side="left")
+        muted_label(head, "проверка и переходы").pack(side="left", padx=(10, 0))
 
-        ctk.CTkButton(buttons, text="Проверить", command=self._check).pack(
-            side="left", padx=6, pady=8
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=(0, 8))
+
+        styled_button(row, "Проверить", command=self._check, kind="primary").pack(
+            side="left", padx=(0, 8), pady=4
         )
-        ctk.CTkButton(buttons, text="Guided cycle", command=self._guided).pack(
-            side="left", padx=6, pady=8
+        styled_button(row, "Guided cycle", command=self._guided, kind="secondary").pack(
+            side="left", padx=(0, 8), pady=4
         )
-        ctk.CTkButton(buttons, text="Следующий шаг", command=self._next_step).pack(
-            side="left", padx=6, pady=8
-        )
-        ctk.CTkButton(
-            buttons,
-            text="Выполнить переход (если готов)",
+        styled_button(
+            row, "Следующий шаг", command=self._next_step, kind="secondary"
+        ).pack(side="left", padx=(0, 8), pady=4)
+        styled_button(
+            row,
+            "Выполнить переход",
             command=self._move_if_ready,
-        ).pack(side="left", padx=6, pady=8)
-        ctk.CTkButton(
-            buttons,
-            text="Авто workflow",
-            command=self._autopilot,
-            fg_color="#00695C",
-            hover_color="#004D40",
-            text_color="#FFFFFF",
-        ).pack(side="left", padx=6, pady=8)
-        ctk.CTkButton(
-            buttons,
-            text="Принудительный перевод",
+            kind="secondary",
+        ).pack(side="left", padx=(0, 8), pady=4)
+        styled_button(
+            row, "Авто workflow", command=self._autopilot, kind="success"
+        ).pack(side="left", padx=(0, 8), pady=4)
+        styled_button(
+            row,
+            "Принудительный перевод",
             command=self._force_move,
-            fg_color="#B71C1C",
-            hover_color="#8E0000",
-            text_color="#FFFFFF",
-        ).pack(side="left", padx=6, pady=8)
+            kind="danger",
+        ).pack(side="left", padx=(0, 8), pady=4)
 
-        ctk.CTkButton(buttons, text="LT", width=60, command=self._lt).pack(
-            side="right", padx=6, pady=8
+        tools = ctk.CTkFrame(card, fg_color="transparent")
+        tools.pack(fill="x", padx=16, pady=(0, 14))
+        muted_label(tools, "Быстрые проверки").pack(side="left", padx=(0, 10))
+        styled_button(tools, "LT", command=self._lt, kind="ghost", width=64).pack(
+            side="left", padx=(0, 6)
         )
-        ctk.CTkButton(buttons, text="RQG", width=60, command=self._rqg).pack(
-            side="right", padx=6, pady=8
+        styled_button(tools, "RQG", command=self._rqg, kind="ghost", width=64).pack(
+            side="left", padx=(0, 6)
         )
-        ctk.CTkButton(
-            buttons, text="Tasks+PR", width=90, command=self._pr_status
-        ).pack(side="right", padx=6, pady=8)
-
-        ctk.CTkButton(
-            buttons, text="БТ/FR", width=70, command=self._bt
-        ).pack(side="right", padx=6, pady=8)
-
-        # Operations (no-LLM) row
-        ops = ctk.CTkFrame(self)
-        ops.pack(fill="x", padx=16, pady=(0, 12))
-
-        ctk.CTkButton(ops, text="Link issues", command=self._link).pack(
-            side="left", padx=6, pady=6
-        )
-        ctk.CTkButton(
-            ops,
-            text="Cleanup links",
-            command=self._cleanup,
-            fg_color="#EF6C00",
-            hover_color="#E65100",
-            text_color="#FFFFFF",
-        ).pack(side="left", padx=6, pady=6)
-        ctk.CTkButton(
-            ops,
-            text="Remove all links",
-            command=self._remove_all,
-            fg_color="#C62828",
-            hover_color="#B71C1C",
-            text_color="#FFFFFF",
-        ).pack(side="left", padx=6, pady=6)
-
-        ctk.CTkButton(ops, text="Master analyze", command=self._master_analyze).pack(
-            side="right", padx=6, pady=6
-        )
-        ctk.CTkButton(ops, text="Deploy plan", command=self._deploy_plan).pack(
-            side="right", padx=6, pady=6
-        )
-        ctk.CTkButton(ops, text="Architecture", command=self._arch).pack(
-            side="right", padx=6, pady=6
+        styled_button(
+            tools, "Tasks+PR", command=self._pr_status, kind="ghost", width=90
+        ).pack(side="left", padx=(0, 6))
+        styled_button(tools, "БТ/FR", command=self._bt, kind="ghost", width=70).pack(
+            side="left"
         )
 
-        # DPM: раскатка на стенды ИФТ / ПСИ
-        dpm_row = ctk.CTkFrame(self)
-        dpm_row.pack(fill="x", padx=16, pady=(0, 12))
+    def _build_ops_card(self) -> None:
+        card = card_frame(self)
+        card.pack(fill="x", padx=16, pady=8)
 
-        ctk.CTkLabel(dpm_row, text="DPM", font=font(13, weight="bold"), width=40).pack(
-            side="left", padx=(6, 2)
+        head = ctk.CTkFrame(card, fg_color="transparent")
+        head.pack(fill="x", padx=16, pady=(14, 6))
+        section_label(head, "Операции").pack(side="left")
+        muted_label(head, "задачи, анализ, артефакты").pack(side="left", padx=(10, 0))
+
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=(0, 14))
+
+        styled_button(row, "Link issues", command=self._link, kind="secondary").pack(
+            side="left", padx=(0, 8), pady=4
         )
-        ctk.CTkButton(
-            dpm_row,
-            text="Раскатка ИФТ",
-            command=self._dpm_deploy_ift,
-            fg_color="#1565C0",
-            hover_color="#0D47A1",
-            text_color="#FFFFFF",
-        ).pack(side="left", padx=6, pady=6)
-        ctk.CTkButton(
-            dpm_row,
-            text="Раскатка ПСИ",
-            command=self._dpm_deploy_psi,
-            fg_color="#2E7D32",
-            hover_color="#1B5E20",
-            text_color="#FFFFFF",
-        ).pack(side="left", padx=6, pady=6)
-        ctk.CTkButton(
-            dpm_row,
-            text="DPM статус",
-            command=self._dpm_status,
-            fg_color="#455A64",
-            hover_color="#37474F",
-            text_color="#FFFFFF",
-            width=100,
-        ).pack(side="left", padx=6, pady=6)
+        styled_button(
+            row, "Cleanup links", command=self._cleanup, kind="warning"
+        ).pack(side="left", padx=(0, 8), pady=4)
+        styled_button(
+            row, "Remove all links", command=self._remove_all, kind="danger"
+        ).pack(side="left", padx=(0, 8), pady=4)
+
+        styled_button(
+            row, "Master analyze", command=self._master_analyze, kind="secondary"
+        ).pack(side="right", padx=(8, 0), pady=4)
+        styled_button(
+            row, "Deploy plan", command=self._deploy_plan, kind="secondary"
+        ).pack(side="right", padx=(8, 0), pady=4)
+        styled_button(row, "Architecture", command=self._arch, kind="ghost").pack(
+            side="right", padx=(8, 0), pady=4
+        )
+
+    def _build_dpm_card(self) -> None:
+        card = card_frame(self)
+        card.pack(fill="x", padx=16, pady=(8, 4))
+
+        head = ctk.CTkFrame(card, fg_color="transparent")
+        head.pack(fill="x", padx=16, pady=(14, 6))
+        section_label(head, "DPM").pack(side="left")
+        muted_label(head, "раскатка на стенды").pack(side="left", padx=(10, 0))
+
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=(0, 14))
+
+        styled_button(
+            row, "Раскатка ИФТ", command=self._dpm_deploy_ift, kind="info"
+        ).pack(side="left", padx=(0, 8), pady=4)
+        styled_button(
+            row, "Раскатка ПСИ", command=self._dpm_deploy_psi, kind="success"
+        ).pack(side="left", padx=(0, 8), pady=4)
+        styled_button(
+            row, "DPM статус", command=self._dpm_status, kind="neutral", width=110
+        ).pack(side="left", pady=4)
 
     def get_release_key(self) -> str:
         return (self.release_key.get() or "").strip().upper()
@@ -313,9 +354,7 @@ class MainFormPanel(ctk.CTkFrame):
 
 
 class DpmServiceChooser(ctk.CTkToplevel):
-    """
-    Модальное окно выбора микросервиса для раскатки через DPM.
-    """
+    """Модальное окно выбора микросервиса для раскатки через DPM."""
 
     def __init__(
         self,
@@ -329,8 +368,9 @@ class DpmServiceChooser(ctk.CTkToplevel):
     ):
         super().__init__(master)
         self.title(title)
-        self.geometry("520x400")
+        self.geometry("520x420")
         self.resizable(False, True)
+        self.configure(fg_color=COLORS["bg"])
         self.grab_set()
         self.lift()
 
@@ -344,11 +384,20 @@ class DpmServiceChooser(ctk.CTkToplevel):
             self,
             text=f"Выберите микросервис для раскатки на {target_stage}:",
             font=font(15, weight="bold"),
+            text_color=COLORS["text"],
             wraplength=480,
         )
         hdr.pack(padx=16, pady=(16, 8), anchor="w")
 
-        scroll = ctk.CTkScrollableFrame(self, width=480, height=240)
+        scroll = ctk.CTkScrollableFrame(
+            self,
+            width=480,
+            height=240,
+            fg_color=COLORS["card"],
+            corner_radius=12,
+            border_width=1,
+            border_color=COLORS["border"],
+        )
         scroll.pack(fill="both", expand=True, padx=16, pady=(0, 8))
 
         for i, svc in enumerate(services):
@@ -359,6 +408,10 @@ class DpmServiceChooser(ctk.CTkToplevel):
                 variable=self._selected,
                 value=str(i),
                 font=font(13),
+                text_color=COLORS["text"],
+                fg_color=COLORS["primary"],
+                hover_color=COLORS["primary_hover"],
+                border_color=COLORS["border"],
             )
             rb.pack(anchor="w", padx=8, pady=4)
 
@@ -368,22 +421,15 @@ class DpmServiceChooser(ctk.CTkToplevel):
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
         btn_row.pack(fill="x", padx=16, pady=(0, 16))
 
-        ctk.CTkButton(
+        kind = "info" if target_stage == "ИФТ" else "success"
+        styled_button(
             btn_row,
-            text=f"Раскатить на {target_stage}",
+            f"Раскатить на {target_stage}",
             command=self._on_ok,
-            fg_color="#1565C0" if target_stage == "ИФТ" else "#2E7D32",
-            hover_color="#0D47A1" if target_stage == "ИФТ" else "#1B5E20",
-            text_color="#FFFFFF",
+            kind=kind,
         ).pack(side="left", padx=(0, 8))
-
-        ctk.CTkButton(
-            btn_row,
-            text="Отмена",
-            command=self._on_cancel,
-            fg_color="#616161",
-            hover_color="#424242",
-            text_color="#FFFFFF",
+        styled_button(
+            btn_row, "Отмена", command=self._on_cancel, kind="neutral"
         ).pack(side="left")
 
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
@@ -402,4 +448,3 @@ class DpmServiceChooser(ctk.CTkToplevel):
         self.result = None
         self.grab_release()
         self.destroy()
-

@@ -11,4 +11,6 @@ pip install -r requirements.txt
 python3 main.py
 ```
 
+Макет тёмного UI (без Jira): `python -m ui.preview_dark_ui`
+
 См. также `docs/RQG.md` (переменные `RQG_PRIMARY`, `RQG_LINK_TYPE`).

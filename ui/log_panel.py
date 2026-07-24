@@ -5,26 +5,24 @@ from typing import Callable
 
 import customtkinter as ctk
 
-from ui.styles import font
+from ui.styles import font, section_label, styled_button, textbox_kwargs
 
 
 class LogPanel(ctk.CTkFrame):
     def __init__(
         self, master: ctk.CTkBaseClass, *, log_file_path_getter: Callable[[], str]
     ):
-        super().__init__(master)
+        super().__init__(master, fg_color="transparent")
         self._get_log_path = log_file_path_getter
 
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=16, pady=(16, 8))
-        ctk.CTkLabel(header, text="Логи", font=font(20, weight="bold")).pack(
-            side="left"
-        )
-        ctk.CTkButton(header, text="Обновить", width=120, command=self.refresh).pack(
-            side="right"
-        )
+        section_label(header, "Логи").pack(side="left")
+        styled_button(
+            header, "Обновить", width=120, command=self.refresh, kind="ghost"
+        ).pack(side="right")
 
-        self.text = ctk.CTkTextbox(self, font=font(12), wrap="none")
+        self.text = ctk.CTkTextbox(self, font=font(12), wrap="none", **textbox_kwargs())
         self.text.pack(fill="both", expand=True, padx=16, pady=(0, 16))
         self.refresh()
 
@@ -46,4 +44,3 @@ class LogPanel(ctk.CTkFrame):
         self.text.delete("1.0", "end")
         self.text.insert("1.0", content)
         self.text.configure(state="normal")
-
