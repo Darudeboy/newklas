@@ -161,6 +161,9 @@ class MainFormPanel(ctk.CTkFrame):
             side="left", padx=(0, 6)
         )
         styled_button(
+            tools, "Stories", command=self._stories, kind="ghost", width=80
+        ).pack(side="left", padx=(0, 6))
+        styled_button(
             tools, "Tasks+PR", command=self._pr_status, kind="ghost", width=90
         ).pack(side="left", padx=(0, 6))
         styled_button(tools, "БТ/FR", command=self._bt, kind="ghost", width=70).pack(
@@ -190,7 +193,7 @@ class MainFormPanel(ctk.CTkFrame):
         ).pack(side="left", padx=(0, 8), pady=4)
 
         styled_button(
-            row, "Master analyze", command=self._master_analyze, kind="secondary"
+            row, "Release analyze", command=self._master_analyze, kind="secondary"
         ).pack(side="right", padx=(8, 0), pady=4)
         styled_button(
             row, "Deploy plan", command=self._deploy_plan, kind="secondary"
@@ -293,6 +296,9 @@ class MainFormPanel(ctk.CTkFrame):
 
     def _rqg(self) -> None:
         self.controller.run_rqg_check(release_key=self.get_release_key())
+
+    def _stories(self) -> None:
+        self.controller.run_story_check(release_key=self.get_release_key())
 
     def _pr_status(self) -> None:
         self.controller.run_release_pr_status(release_key=self.get_release_key())

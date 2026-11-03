@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 
 def _is_story_or_bug(issue_type: str) -> bool:
@@ -33,6 +33,13 @@ def _detect_pr_status(*texts: str) -> str:
     return "Unknown"
 
 
+def _normalize_branch_name(branch_name: str) -> str:
+    normalized = (branch_name or "").strip().lower().replace("\\", "/")
+    if normalized.startswith("refs/heads/"):
+        normalized = normalized[len("refs/heads/") :]
+    return normalized
+
+
 def _extract_target_branch(pr: dict) -> str:
     """Достает целевую ветку PR из разных форматов dev-status."""
     destination = pr.get("destination") or {}
@@ -55,8 +62,22 @@ def _extract_target_branch(pr: dict) -> str:
 
 
 def _is_master_like_branch(branch_name: str) -> bool:
-    normalized = (branch_name or "").strip().lower()
-    return normalized.endswith("/master") or normalized in {"master", "main"} or normalized.endswith("/main")
+    normalized = _normalize_branch_name(branch_name)
+    return (
+        normalized.endswith("/master")
+        or normalized in {"master", "main"}
+        or normalized.endswith("/main")
+    )
+
+
+def _is_release_target_branch(branch_name: str, release_key: str) -> bool:
+    """PR в релизную ветку вида release/HRPRELEASE-XXXXX (из которой собирался дистрибутив)."""
+    normalized = _normalize_branch_name(branch_name)
+    rk = (release_key or "").strip().lower()
+    if not rk or not normalized:
+        return False
+    want = f"release/{rk}"
+    return normalized == want or normalized.endswith("/" + want)
 
 
 def _extract_prs_from_issue_links(issue: dict) -> List[Dict[str, str]]:
@@ -125,15 +146,26 @@ def _extract_prs_from_remote_links(remote_links: List[dict]) -> List[Dict[str, s
     return prs
 
 
-def _extract_prs_from_dev_status(dev_prs: List[dict]) -> List[Dict[str, str]]:
-    """Извлекает PR из ответа Jira dev-status API (панель Development)."""
+def _extract_prs_from_dev_status(
+    dev_prs: List[dict],
+    *,
+    branch_predicate: Optional[Callable[[str], bool]] = None,
+) -> List[Dict[str, str]]:
+    """Извлекает PR из ответа Jira dev-status API (панель Development).
+
+    Если задан branch_predicate и у PR известна target_branch — оставляем только
+    подходящие ветки. Пустая target_branch не отбрасывается (нет данных для фильтра).
+    """
     result: List[Dict[str, str]] = []
     for pr in dev_prs:
         url = pr.get("url", "")
         name = pr.get("name", "") or url
         target_branch = _extract_target_branch(pr)
-        if target_branch and not _is_master_like_branch(target_branch):
-            # Для релизной проверки берем PR только в master/main.
+        if (
+            branch_predicate is not None
+            and target_branch
+            and not branch_predicate(target_branch)
+        ):
             continue
         raw_status = (pr.get("status") or "").upper()
         if raw_status == "MERGED":
@@ -169,7 +201,13 @@ def _deduplicate_prs(prs: List[Dict[str, str]]) -> List[Dict[str, str]]:
     return deduped
 
 
-def _collect_prs_from_issue(jira_service, issue: dict, issue_key: str) -> List[Dict[str, str]]:
+def _collect_prs_from_issue(
+    jira_service,
+    issue: dict,
+    issue_key: str,
+    *,
+    branch_predicate: Optional[Callable[[str], bool]] = None,
+) -> List[Dict[str, str]]:
     """Собирает PR из одной задачи через все три источника."""
     prs: List[Dict[str, str]] = []
     prs.extend(_extract_prs_from_issue_links(issue))
@@ -178,11 +216,18 @@ def _collect_prs_from_issue(jira_service, issue: dict, issue_key: str) -> List[D
     issue_id = issue.get("id")
     if issue_id:
         dev_prs = jira_service.get_dev_status_prs(issue_id)
-        prs.extend(_extract_prs_from_dev_status(dev_prs))
+        prs.extend(
+            _extract_prs_from_dev_status(dev_prs, branch_predicate=branch_predicate)
+        )
     return prs
 
 
-def _collect_prs_deep(jira_service, issue_key: str) -> List[Dict[str, str]]:
+def _collect_prs_deep(
+    jira_service,
+    issue_key: str,
+    *,
+    branch_predicate: Optional[Callable[[str], bool]] = None,
+) -> List[Dict[str, str]]:
     """Собирает PR из задачи и её сабтасков (глубина 1).
 
     Проверяет три источника: issuelinks, remotelinks и dev-status API
@@ -194,7 +239,11 @@ def _collect_prs_deep(jira_service, issue_key: str) -> List[Dict[str, str]]:
     if not issue:
         return prs
 
-    prs.extend(_collect_prs_from_issue(jira_service, issue, issue_key))
+    prs.extend(
+        _collect_prs_from_issue(
+            jira_service, issue, issue_key, branch_predicate=branch_predicate
+        )
+    )
 
     for subtask in issue.get("fields", {}).get("subtasks", []) or []:
         sub_key = subtask.get("key")
@@ -203,9 +252,14 @@ def _collect_prs_deep(jira_service, issue_key: str) -> List[Dict[str, str]]:
         sub_issue = jira_service.get_issue_details(sub_key)
         if not sub_issue:
             continue
-        prs.extend(_collect_prs_from_issue(jira_service, sub_issue, sub_key))
+        prs.extend(
+            _collect_prs_from_issue(
+                jira_service, sub_issue, sub_key, branch_predicate=branch_predicate
+            )
+        )
 
     return _deduplicate_prs(prs)
+
 
 
 def collect_release_tasks_pr_status(
@@ -261,7 +315,10 @@ def collect_release_tasks_pr_status(
         status = fields.get("status", {}).get("name", "Unknown")
         summary = fields.get("summary", "")
 
-        prs = _collect_prs_deep(jira_service, issue_key)
+        # Tasks+PR: по-прежнему интересуют PR в master/main.
+        prs = _collect_prs_deep(
+            jira_service, issue_key, branch_predicate=_is_master_like_branch
+        )
 
         items.append(
             {

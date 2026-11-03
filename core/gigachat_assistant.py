@@ -22,6 +22,7 @@ COMMAND_INTENT_SYSTEM_PROMPT = """Ты интерпретатор команд �
 2) В JSON должен быть ровно один объект с полями: intent, confidence.
 3) intent должен быть строго из allowlist:
    - rqg_check
+   - story_check
    - release_check
    - status_release
    - deploy_plan_pipeline
@@ -41,6 +42,7 @@ COMMAND_INTENT_SYSTEM_PROMPT = """Ты интерпретатор команд �
 - link_issues, cleanup_issues, move_release_if_ready, workflow_autopilot, force_move_release, create_deploy_plan, deploy_plan_pipeline, business_requirements
 Верни их intent независимо от подтверждения; подтверждение сделает приложение.
 workflow_autopilot — только если пользователь явно просит непрерывный/авто прогон по workflow (не путать с одним переходом move_release_if_ready).
+story_check — проверка Story релиза по требованиям (кнопка Stories); в dry-run не пишет AIFIXED.
 """
 
 

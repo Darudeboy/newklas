@@ -1,5 +1,5 @@
 """
-Анализ PR в master по релизу и генерация Deploy plan в Confluence.
+Анализ PR в релизную ветку (release/HRPRELEASE-XXXXX) и генерация Deploy plan в Confluence.
 Совместимо с UI: ConfluenceDeployPlanGenerator(url, token, template_page_id),
 MasterServicesAnalyzer(jira_service, confluence_generator).
 """
@@ -10,6 +10,8 @@ import logging
 import re
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Set
+
+from release_pr_status import _collect_prs_deep, _is_release_target_branch
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +40,6 @@ def _repo_from_pr_url(url: str, title: str = "") -> str:
 def _is_story_or_bug(issue_type: str) -> bool:
     n = (issue_type or "").strip().lower()
     return n in {"story", "bug", "история", "дефект"}
-
-
-def _is_master_like_branch(branch_name: str) -> bool:
-    n = (branch_name or "").strip().lower()
-    return n.endswith("/master") or n in {"master", "main"} or n.endswith("/main")
 
 
 class ConfluenceDeployPlanGenerator:
@@ -678,22 +675,22 @@ def merge_deploy_plan_into_template_storage(
 
 
 class MasterServicesAnalyzer:
-    """Собирает PR по Story/Bug релиза; сервисы = репозитории из merged PR в master."""
+    """Собирает PR по Story/Bug релиза; сервисы = репозитории из merged PR в release/<ключ>."""
 
     def __init__(self, jira_service: Any, confluence_generator: ConfluenceDeployPlanGenerator):
         self.jira_service = jira_service
         self.confluence_generator = confluence_generator
 
     def analyze_release(self, release_key: str) -> Dict[str, Any]:
-        from release_pr_status import _collect_prs_deep
-
         rk = (release_key or "").strip().upper()
+        release_branch = f"release/{rk}" if rk else ""
         if not rk:
             return {
                 "success": False,
                 "message": "Не указан ключ релиза",
                 "release_key": "",
                 "release_summary": "",
+                "release_branch": "",
                 "total_tasks": 0,
                 "total_prs": 0,
                 "services": [],
@@ -707,6 +704,7 @@ class MasterServicesAnalyzer:
                 "message": f"Релиз {rk} не найден",
                 "release_key": rk,
                 "release_summary": "",
+                "release_branch": release_branch,
                 "total_tasks": 0,
                 "total_prs": 0,
                 "services": [],
@@ -723,6 +721,7 @@ class MasterServicesAnalyzer:
                 "message": "В релизе нет связанных задач",
                 "release_key": rk,
                 "release_summary": rel_summary,
+                "release_branch": release_branch,
                 "total_tasks": 0,
                 "total_prs": 0,
                 "services": [],
@@ -735,6 +734,9 @@ class MasterServicesAnalyzer:
         services_ordered: List[str] = []
         seen_svc: Set[str] = set()
 
+        def _release_branch_pred(branch: str) -> bool:
+            return _is_release_target_branch(branch, rk)
+
         for key in linked:
             issue = self.jira_service.get_issue_details(key)
             if not issue:
@@ -745,7 +747,10 @@ class MasterServicesAnalyzer:
             if not _is_story_or_bug(itype):
                 continue
             total_tasks += 1
-            prs = _collect_prs_deep(self.jira_service, key)
+            # Deploy plan: PR в релизную ветку, из которой собирался дистрибутив.
+            prs = _collect_prs_deep(
+                self.jira_service, key, branch_predicate=_release_branch_pred
+            )
             all_prs.extend(prs)
 
             for pr in prs:
@@ -754,9 +759,14 @@ class MasterServicesAnalyzer:
                     continue
                 src = pr.get("source", "")
                 target = pr.get("target_branch") or ""
-                if src == "dev-status" and target and not _is_master_like_branch(
-                    target
+                # Для dev-status с известной веткой — ещё раз убеждаемся, что это release/<ключ>.
+                if src == "dev-status" and target and not _is_release_target_branch(
+                    target, rk
                 ):
+                    continue
+                # issuelinks/remotelinks без target_branch не включаем в deploy plan —
+                # они могли относиться к master/feature.
+                if src != "dev-status" or not target:
                     continue
                 url = pr.get("url", "") or ""
                 title = pr.get("title", "") or ""
@@ -767,7 +777,8 @@ class MasterServicesAnalyzer:
                     {
                         "issue": key,
                         "service": svc,
-                        "status": "merged_to_master",
+                        "status": "merged_to_release_branch",
+                        "target_branch": target,
                     }
                 )
                 if svc not in seen_svc:
@@ -775,14 +786,15 @@ class MasterServicesAnalyzer:
                     services_ordered.append(svc)
 
         msg = (
-            f"Задач Story/Bug: {total_tasks}, PR (всего собрано): {len(all_prs)}, "
-            f"в master (merged): {len(services_ordered)} сервисов"
+            f"Задач Story/Bug: {total_tasks}, PR (собрано по {release_branch}): {len(all_prs)}, "
+            f"merged в {release_branch}: {len(services_ordered)} сервисов"
         )
         return {
             "success": True,
             "message": msg,
             "release_key": rk,
             "release_summary": rel_summary,
+            "release_branch": release_branch,
             "total_tasks": total_tasks,
             "total_prs": len(all_prs),
             "services": services_ordered,

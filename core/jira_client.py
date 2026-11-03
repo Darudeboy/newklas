@@ -312,6 +312,39 @@ class JiraService:
             )
             return []
 
+    def get_issue_changelog(self, issue_key: str) -> List[dict]:
+        """История изменений задачи (changelog.histories)."""
+        safe_key = (issue_key or "").strip().upper()
+        if not safe_key:
+            return []
+        try:
+            response = self.jira.get(
+                f"/rest/api/2/issue/{safe_key}?expand=changelog"
+            )
+            changelog = (response or {}).get("changelog") or {}
+            histories = changelog.get("histories") or []
+            return histories if isinstance(histories, list) else []
+        except Exception as e:
+            self.logger.error("Ошибка changelog для %s: %s", safe_key, e)
+            return []
+
+    def get_issue_worklogs(self, issue_key: str) -> List[dict]:
+        """Списания времени по задаче."""
+        safe_key = (issue_key or "").strip().upper()
+        if not safe_key:
+            return []
+        try:
+            response = self.jira.get(f"/rest/api/2/issue/{safe_key}/worklog")
+            worklogs = (
+                response.get("worklogs", [])
+                if isinstance(response, dict)
+                else []
+            )
+            return worklogs if isinstance(worklogs, list) else []
+        except Exception as e:
+            self.logger.error("Ошибка worklog для %s: %s", safe_key, e)
+            return []
+
     def get_available_transitions(self, issue_key: str) -> List[dict]:
         """Получение доступных переходов статуса для задачи."""
         try:

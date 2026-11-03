@@ -34,6 +34,7 @@ from lt import run_lt_check_with_target
 from master_analyzer import ConfluenceDeployPlanGenerator, MasterServicesAnalyzer
 from release_pr_status import collect_release_tasks_pr_status, format_release_tasks_pr_report
 from rqg import run_rqg_check
+from story_checker import analyze_stories_for_release, format_story_check_report
 from ui.styles import STATUS
 
 logger = logging.getLogger(__name__)
@@ -173,13 +174,23 @@ class AppController:
                 self.current_analysis.get("services") or []
             ):
                 return (
-                    "Сначала выполни «собери деплой план» или Master analyze — "
+                    "Сначала выполни «собери деплой план» или Release analyze — "
                     "нет сохранённого анализа сервисов."
                 )
             self.create_deploy_plan()
             return "Открыл подтверждение создания Deploy plan (если Confluence настроен)."
 
-        # --- Master analyze + Deploy plan (полный пайплайн) ---
+        # --- Проверка Story ---
+        if re.search(
+            r"(?:проверь|проверка|проверьте)\s+stor(?:y|ies|и)|провер\w*\s+стори|стори\s+релиз|story\s+check",
+            lowered,
+        ):
+            if not release_key:
+                return "Укажи ключ релиза в сообщении или в поле Release key."
+            self.run_story_check(release_key=release_key)
+            return f"Запускаю проверку Story для {release_key}. Смотри вкладку «Результаты»."
+
+        # --- Release analyze + Deploy plan (полный пайплайн) ---
         if re.search(
             r"собери\s+деплой|деплой[\s-]*план|deploy\s*plan|собрать\s+деплой",
             lowered,
@@ -188,7 +199,8 @@ class AppController:
                 return "Укажи ключ релиза в сообщении или в поле Release key."
             self.run_deploy_plan_pipeline(release_key=release_key)
             return (
-                f"Запускаю анализ master/PR для {release_key}, затем — диалог Deploy plan в Confluence. "
+                f"Запускаю анализ PR в release/{release_key} для {release_key}, "
+                f"затем — диалог Deploy plan в Confluence. "
                 f"Результат — во вкладке «Результаты»."
             )
 
@@ -405,6 +417,7 @@ class AppController:
 
             allowed_intents = {
                 "rqg_check": "rqg_check",
+                "story_check": "story_check",
                 "release_check": "release_check",
                 "status_release": "status_release",
                 "deploy_plan_pipeline": "deploy_plan_pipeline",
@@ -421,7 +434,7 @@ class AppController:
 
             if not isinstance(intent, str) or intent not in allowed_intents:
                 return (
-                    "Не распознал команду. Поддерживаем: RQG, проверка/статус релиза, "
+                    "Не распознал команду. Поддерживаем: RQG, Stories, проверка/статус релиза, "
                     "собери релиз (линк по fixVersion), cleanup, деплой план, следующий шаг, "
                     "переход по workflow, автопилот workflow, БТ/FR."
                 )
@@ -429,7 +442,8 @@ class AppController:
             if intent == "none" or confidence_f < 0.55:
                 return (
                     "Не уверен, какую команду ты хотел(а). Попробуй явнее: "
-                    "«проведи RQG», «проверь гейты/статус релиза», «собери релиз (fixVersion)», "
+                    "«проведи RQG», «проверь стори», «проверь гейты/статус релиза», "
+                    "«собери релиз (fixVersion)», "
                     "«убери лишние», «собери/опубликуй деплой план», «следующий шаг», "
                     "«выполни переход», «автопилот workflow», «собери БТ/FR»."
                 )
@@ -440,6 +454,12 @@ class AppController:
                     return "Укажи ключ релиза в сообщении или в поле Release key."
                 self.run_rqg_check(release_key=release_key)
                 return f"Запускаю RQG для {release_key}. Смотри вкладку «Результаты»."
+
+            if intent == "story_check":
+                if not release_key:
+                    return "Укажи ключ релиза в сообщении или в поле Release key."
+                self.run_story_check(release_key=release_key)
+                return f"Запускаю проверку Story для {release_key}. Смотри вкладку «Результаты»."
 
             if intent in ("release_check", "status_release"):
                 if not release_key:
@@ -459,13 +479,14 @@ class AppController:
                     return "Укажи ключ релиза в сообщении или в поле Release key."
                 self.run_deploy_plan_pipeline(release_key=release_key)
                 return (
-                    f"Запускаю Master analyze + затем Deploy plan в Confluence для {release_key}."
+                    f"Запускаю анализ PR в release/{release_key} + затем Deploy plan "
+                    f"в Confluence для {release_key}."
                 )
 
             if intent == "create_deploy_plan":
                 if not self.current_analysis or not (self.current_analysis.get("services") or []):
                     return (
-                        "Сначала выполни «собери деплой план» (Master analyze) — "
+                        "Сначала выполни «собери деплой план» (Release analyze) — "
                         "нет сохранённого анализа сервисов."
                     )
                 self.create_deploy_plan()
@@ -1042,6 +1063,45 @@ class AppController:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def run_story_check(self, *, release_key: str, dry_run: bool | None = None) -> None:
+        safe_release = (release_key or "").strip().upper()
+        if not safe_release:
+            self._ui_show_error("Ошибка", "Введите ключ релиза.")
+            return
+        effective_dry = self._form_get_dry_run() if dry_run is None else bool(dry_run)
+        self._ui_set_status("Stories…", STATUS["progress"])
+        self._ui_set_result_text(
+            f"Проверка Story для {safe_release}"
+            + (" (dry-run)" if effective_dry else "")
+            + "…"
+        )
+
+        def worker():
+            try:
+                report_data = analyze_stories_for_release(
+                    self.jira_service,
+                    safe_release,
+                    dry_run=effective_dry,
+                    progress_callback=None,
+                )
+                text = format_story_check_report(report_data)
+                self._ui_set_result_text(text)
+                self._ui_set_status("Готово", STATUS["ok"])
+                self.history.add(
+                    "Проверка Story",
+                    {
+                        "release": safe_release,
+                        "total": report_data.get("stories_total"),
+                        "failed": report_data.get("stories_failed"),
+                    },
+                )
+                self.history.save_to_file(self.history_path)
+            except Exception as e:
+                self._ui_set_status("Ошибка", STATUS["error"])
+                self._ui_set_result_text(f"Ошибка Stories: {e}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def run_business_requirements(self, *, release_key: str, project_key: str | None = None) -> None:
         safe_release = (release_key or "").strip().upper()
         if not safe_release:
@@ -1126,8 +1186,11 @@ class AppController:
             self._ui_show_error("Ошибка", "Confluence/Master analyzer не настроен. Проверь .env.")
             return
 
-        self._ui_set_status("Master analyze…", STATUS["progress"])
-        self._ui_set_result_text(f"Анализ master-сервисов для {safe_release}…")
+        branch = f"release/{safe_release}"
+        self._ui_set_status("Release analyze…", STATUS["progress"])
+        self._ui_set_result_text(
+            f"Анализ PR в {branch} (ветка дистрибутива) для {safe_release}…"
+        )
 
         def worker():
             try:
@@ -1140,23 +1203,28 @@ class AppController:
                 )
                 self._ui_set_status("Готово", STATUS["ok"])
                 self.history.add(
-                    "Master analyze",
-                    {"release": safe_release, "services": len(analysis.get("services", []) or [])},
+                    "Release analyze",
+                    {
+                        "release": safe_release,
+                        "release_branch": analysis.get("release_branch"),
+                        "services": len(analysis.get("services", []) or []),
+                    },
                 )
                 self.history.save_to_file(self.history_path)
             except Exception as e:
                 self._ui_set_status("Ошибка", STATUS["error"])
-                self._ui_set_result_text(f"Ошибка master analysis: {e}")
+                self._ui_set_result_text(f"Ошибка release analysis: {e}")
 
         threading.Thread(target=worker, daemon=True).start()
 
     def create_deploy_plan(self) -> None:
         """
-        Создать/обновить Deploy plan в Confluence по результату последнего master анализа.
+        Создать/обновить Deploy plan в Confluence по результату последнего
+        анализа PR в release/<ключ релиза>.
         """
         analysis = self.current_analysis or (self.state.last_snapshot or {}).get("master_analysis")
         if not analysis or not isinstance(analysis, dict) or not analysis.get("success"):
-            self._ui_show_error("Ошибка", "Сначала выполни Master analyze.")
+            self._ui_show_error("Ошибка", "Сначала выполни Release analyze.")
             return
         services = analysis.get("services") or []
         if not services:
@@ -1230,7 +1298,7 @@ class AppController:
 
     def run_deploy_plan_pipeline(self, *, release_key: str) -> None:
         """
-        Master analyze по релизу, затем на главном потоке — диалог и создание Deploy plan в Confluence.
+        Анализ PR в release/<ключ>, затем на главном потоке — диалог и создание Deploy plan.
         """
         safe_release = (release_key or "").strip().upper()
         if not safe_release:
@@ -1239,9 +1307,11 @@ class AppController:
         if not self.master_analyzer:
             self._ui_show_error("Ошибка", "Confluence/Master analyzer не настроен. Проверь .env.")
             return
-        self._ui_set_status("Master → Deploy plan…", STATUS["progress"])
+        branch = f"release/{safe_release}"
+        self._ui_set_status("Release → Deploy plan…", STATUS["progress"])
         self._ui_set_result_text(
-            f"Анализ связанных Story/Bug и PR для {safe_release}… затем откроется подтверждение Deploy plan."
+            f"Анализ Story/Bug и merged PR в {branch} для {safe_release}… "
+            f"затем откроется подтверждение Deploy plan."
         )
 
         def worker():
@@ -1255,9 +1325,10 @@ class AppController:
                 )
                 self._ui_set_status("Готово (анализ)", STATUS["ok"])
                 self.history.add(
-                    "Master analyze",
+                    "Release analyze",
                     {
                         "release": safe_release,
+                        "release_branch": analysis.get("release_branch"),
                         "services": len(analysis.get("services", []) or []),
                     },
                 )
@@ -1267,14 +1338,14 @@ class AppController:
                     if not analysis.get("success"):
                         self._ui_show_error(
                             "Анализ",
-                            "Master analyze неуспешен — Deploy plan не запущен.",
+                            "Release analyze неуспешен — Deploy plan не запущен.",
                         )
                         return
                     services = analysis.get("services") or []
                     if not services:
                         self._ui_show_error(
                             "Нет сервисов",
-                            "Нет сервисов для Deploy plan.",
+                            f"Нет merged PR в {branch} — нечего включать в Deploy plan.",
                         )
                         return
                     self.create_deploy_plan()
